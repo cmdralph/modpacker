@@ -1,13 +1,29 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en" data-theme="dark" data-accent="emerald" class="dark">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#020617" />
     <meta name="description" content="Build Minecraft modpacks from Modrinth and CurseForge mods and export them as .mrpack or CurseForge .zip, entirely in your browser." />
     <title>Modpacker</title>
+    <script>
+      // Apply the saved theme before first paint to avoid a flash of the default theme.
+      (function () {
+        try {
+          var p = JSON.parse(localStorage.getItem('modpacker:preferences:v1') || '{}');
+          var root = document.documentElement;
+          var theme = p.theme || 'dark';
+          if (theme === 'system') theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+          if (/^(dark|midnight|nether|light)$/.test(theme)) root.dataset.theme = theme;
+          if (/^[a-z]+$/.test(p.accent || '')) root.dataset.accent = p.accent;
+          if ([90, 100, 110, 120].indexOf(p.fontScale) >= 0) root.style.fontSize = p.fontScale + '%';
+          root.classList.toggle('dark', theme !== 'light');
+        } catch (e) {}
+      })();
+    </script>
   </head>
-  <body class="bg-slate-950 text-slate-100 antialiased">
+  <body class="antialiased">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

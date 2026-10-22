@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "typecheck": "tsc -b",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "theme": "node scripts/generate-theme.mjs"
   },
   "dependencies": {
     "jszip": "^3.10.2",

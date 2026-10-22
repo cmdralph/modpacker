@@ -1,3 +1,4 @@
+import type { SearchSort } from '../state/preferences';
 import type { CurseForgeFileRef, Loader, ModSource, ModrinthFileRef, SearchHit } from '../types';
 
 export interface SearchPage {
@@ -11,6 +12,7 @@ export interface SearchParams {
   loader: Loader;
   offset: number;
   limit: number;
+  sort?: SearchSort;
   signal?: AbortSignal;
 }
 

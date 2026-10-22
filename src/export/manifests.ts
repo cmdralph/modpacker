@@ -18,7 +18,7 @@ export interface CurseForgeManifest {
   overrides: 'overrides';
 }
 
-/** CurseForge loader ids carry the loader build, e.g. `fabric-0.16.5`, `forge-47.3.0`, `neoforge-21.1.77`. */
+/** CurseForge loader ids carry the loader build, e.g. `fabric-0.16.5`, `quilt-0.27.1`, `forge-47.3.0`, `neoforge-21.1.77`. */
 export function curseForgeLoaderId(loader: Loader, loaderVersion: string): string {
   return `${loader}-${loaderVersion}`;
 }
@@ -88,6 +88,7 @@ export interface ModrinthIndex {
 /** Dependency keys defined by the .mrpack spec. */
 export const MRPACK_LOADER_KEY: Record<Loader, string> = {
   fabric: 'fabric-loader',
+  quilt: 'quilt-loader',
   forge: 'forge',
   neoforge: 'neoforge',
 };

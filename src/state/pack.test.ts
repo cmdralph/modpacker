@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { applyActions, curseForgeFile, modrinthFile, packWith, projectInfo } from '../test/fixtures';
-import { findConflicts, findDuplicates, orderedMods } from './pack';
+import { findConflicts, findDuplicates, orderedMods, packCoverage, removalSnapshot } from './pack';
 
 describe('packReducer', () => {
   it('adds mods once and records who requires them', () => {
@@ -91,5 +91,48 @@ describe('selectors', () => {
     ]);
     expect(findDuplicates(state).map(([a, b]) => [a.key, b.key])).toEqual([['modrinth:a', 'curseforge:1']]);
     expect(orderedMods(state)).toHaveLength(3);
+  });
+});
+
+describe('undo and coverage', () => {
+  it('restores removed mods, orphaned dependencies and links exactly', () => {
+    const before = applyActions([
+      { type: 'addMod', info: projectInfo('modrinth', 'a'), explicit: true, requiredBy: null, pinnedFileId: null },
+      { type: 'addMod', info: projectInfo('modrinth', 'b'), explicit: true, requiredBy: null, pinnedFileId: null },
+      { type: 'addMod', info: projectInfo('modrinth', 'only-a'), explicit: false, requiredBy: 'modrinth:a', pinnedFileId: null },
+      { type: 'addMod', info: projectInfo('modrinth', 'shared'), explicit: false, requiredBy: 'modrinth:a', pinnedFileId: null },
+      { type: 'addMod', info: projectInfo('modrinth', 'shared'), explicit: false, requiredBy: 'modrinth:b', pinnedFileId: null },
+    ]);
+    const after = applyActions([{ type: 'removeMods', keys: ['modrinth:a'] }], before);
+    const snapshot = removalSnapshot(before, after);
+    expect(snapshot.removed.map((m) => m.key)).toEqual(['modrinth:a', 'modrinth:only-a']);
+
+    const restored = applyActions([{ type: 'restoreMods', snapshot }], after);
+    expect(restored.order).toEqual(before.order);
+    expect(restored.mods).toEqual(before.mods);
+  });
+
+  it('keeps mods added after the removal when undoing', () => {
+    const before = packWith([{ info: projectInfo('modrinth', 'a'), modrinth: modrinthFile('a') }]);
+    const after = applyActions([{ type: 'removeMods', keys: ['modrinth:a'] }], before);
+    const later = applyActions([{ type: 'addMod', info: projectInfo('modrinth', 'z'), explicit: true, requiredBy: null, pinnedFileId: null }], after);
+    const restored = applyActions([{ type: 'restoreMods', snapshot: removalSnapshot(before, after) }], later);
+    expect(restored.order).toEqual(['modrinth:a', 'modrinth:z']);
+  });
+
+  it('forgets a typed loader build when the profile changes', () => {
+    const state = applyActions([
+      { type: 'setLoaderVersion', version: '0.15.0' },
+      { type: 'setProfile', profile: { gameVersion: '1.20.1', loader: 'forge' } },
+    ]);
+    expect(state.loaderVersion).toBeNull();
+  });
+
+  it('covers cross-platform matches so hidden search hits include the twin project', () => {
+    const state = packWith([{ info: projectInfo('modrinth', 'AANobbMI'), modrinth: modrinthFile('AANobbMI'), curseforge: curseForgeFile(394468) }]);
+    const coverage = packCoverage(state);
+    expect(coverage.get('modrinth:AANobbMI')?.key).toBe('modrinth:AANobbMI');
+    expect(coverage.get('curseforge:394468')?.key).toBe('modrinth:AANobbMI');
+    expect(coverage.has('curseforge:1')).toBe(false);
   });
 });

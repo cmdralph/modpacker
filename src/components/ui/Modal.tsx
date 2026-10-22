@@ -10,11 +10,21 @@ interface ModalProps {
   icon?: ReactNode;
   children?: ReactNode;
   footer?: ReactNode;
-  size?: 'md' | 'lg';
+  size?: 'md' | 'lg' | 'xl';
+  /** `sheet` slides in from the right on large screens (bottom sheet on phones). */
+  variant?: 'dialog' | 'sheet';
+  /** Extra header content under the title (tabs, actions). */
+  headerExtra?: ReactNode;
 }
 
-/** Accessible modal dialog: Escape closes, focus moves inside and returns on close. */
-export function Modal({ open, onClose, title, description, icon, children, footer, size = 'md' }: ModalProps) {
+const SIZE: Record<NonNullable<ModalProps['size']>, string> = {
+  md: 'sm:max-w-lg',
+  lg: 'sm:max-w-2xl',
+  xl: 'sm:max-w-4xl',
+};
+
+/** Accessible modal: Escape closes, focus moves inside, is trapped with Tab, and returns on close. */
+export function Modal({ open, onClose, title, description, icon, children, footer, size = 'md', variant = 'dialog', headerExtra }: ModalProps) {
   const titleId = useId();
   const descriptionId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
@@ -26,13 +36,32 @@ export function Modal({ open, onClose, title, description, icon, children, foote
     const previouslyFocused = document.activeElement as HTMLElement | null;
     panelRef.current?.focus();
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onCloseRef.current();
+      if (event.key === 'Escape') {
+        // Capture-phase + immediate stop: only the top-most dialog closes (not the drawer behind it).
+        event.stopImmediatePropagation();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== 'Tab' || !panelRef.current) return;
+      const focusable = panelRef.current.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) return;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
-    document.addEventListener('keydown', onKey);
+    document.addEventListener('keydown', onKey, true);
     const overflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => {
-      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('keydown', onKey, true);
       document.body.style.overflow = overflow;
       previouslyFocused?.focus();
     };
@@ -40,9 +69,11 @@ export function Modal({ open, onClose, title, description, icon, children, foote
 
   if (!open) return null;
 
+  const sheet = variant === 'sheet';
+
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-4">
-      <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" onClick={onClose} aria-hidden />
+    <div className={cx('fixed inset-0 z-50 flex', sheet ? 'items-end justify-end sm:items-stretch' : 'items-end justify-center sm:items-center sm:p-4')}>
+      <div className="absolute inset-0 bg-base-950/75 backdrop-blur-sm animate-fade-in" onClick={onClose} aria-hidden />
       <div
         ref={panelRef}
         role="dialog"
@@ -51,33 +82,38 @@ export function Modal({ open, onClose, title, description, icon, children, foote
         aria-describedby={description ? descriptionId : undefined}
         tabIndex={-1}
         className={cx(
-          'relative flex max-h-[92vh] w-full flex-col overflow-hidden rounded-t-2xl bg-slate-900 shadow-2xl ring-1 ring-slate-700 focus:outline-none sm:rounded-2xl',
-          size === 'lg' ? 'sm:max-w-2xl' : 'sm:max-w-lg',
+          'relative flex w-full flex-col overflow-hidden bg-base-900 shadow-2xl ring-1 ring-base-700 focus:outline-none',
+          sheet
+            ? 'max-h-[94vh] rounded-t-2xl animate-slide-up sm:max-h-none sm:max-w-xl sm:rounded-none sm:rounded-l-2xl'
+            : cx('max-h-[92vh] rounded-t-2xl animate-fade-in sm:rounded-2xl', SIZE[size]),
         )}
       >
-        <div className="flex items-start gap-3 border-b border-slate-800 p-5">
-          {icon && <div className="shrink-0">{icon}</div>}
-          <div className="min-w-0 flex-1">
-            <h2 id={titleId} className="text-lg font-bold text-white">
-              {title}
-            </h2>
-            {description && (
-              <p id={descriptionId} className="mt-1 text-sm text-slate-400">
-                {description}
-              </p>
-            )}
+        <div className="border-b border-base-800 p-5 pb-4">
+          <div className="flex items-start gap-3">
+            {icon && <div className="shrink-0">{icon}</div>}
+            <div className="min-w-0 flex-1">
+              <h2 id={titleId} className="text-lg font-bold text-base-50">
+                {title}
+              </h2>
+              {description && (
+                <div id={descriptionId} className="mt-1 text-sm text-base-400">
+                  {description}
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg p-1.5 text-base-400 hover:bg-base-800 hover:text-base-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400"
+              aria-label="Close dialog"
+            >
+              <X className="size-5" />
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
-            aria-label="Close dialog"
-          >
-            <X className="size-5" />
-          </button>
+          {headerExtra && <div className="mt-4">{headerExtra}</div>}
         </div>
-        {children && <div className="overflow-y-auto p-5">{children}</div>}
-        {footer && <div className="flex flex-col-reverse gap-2 border-t border-slate-800 bg-slate-900/80 p-4 sm:flex-row sm:justify-end">{footer}</div>}
+        {children && <div className="flex-1 overflow-y-auto p-5">{children}</div>}
+        {footer && <div className="flex flex-col-reverse gap-2 border-t border-base-800 bg-base-900/80 p-4 sm:flex-row sm:justify-end">{footer}</div>}
       </div>
     </div>
   );

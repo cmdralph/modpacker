@@ -21,6 +21,7 @@ const UPSTREAM = 'https://api.curseforge.com';
 const ALLOWED_ROUTES = [
   { method: 'GET', pattern: /^\/v1\/mods\/search$/ },
   { method: 'POST', pattern: /^\/v1\/mods$/ },
+  { method: 'GET', pattern: /^\/v1\/mods\/\d+$/ },
   { method: 'GET', pattern: /^\/v1\/mods\/\d+\/files$/ },
   { method: 'GET', pattern: /^\/v1\/mods\/\d+\/files\/\d+$/ },
   { method: 'POST', pattern: /^\/v1\/fingerprints\/432$/ },

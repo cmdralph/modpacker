@@ -5,6 +5,8 @@ import type { CurseForgeFileRef, ModrinthFileRef, PackMeta, PackMod, Profile } f
 export interface PackState {
   meta: PackMeta;
   profile: Profile;
+  /** Loader build typed by the user or taken from an imported pack; null = use the latest. */
+  loaderVersion: string | null;
   mods: Record<string, PackMod>;
   /** Insertion order of mod keys. */
   order: string[];
@@ -14,6 +16,8 @@ export type PackAction =
   | { type: 'hydrate'; state: PackState }
   | { type: 'setMeta'; patch: Partial<PackMeta> }
   | { type: 'setProfile'; profile: Profile }
+  | { type: 'setLoaderVersion'; version: string | null }
+  | { type: 'setPinned'; key: string; pinnedFileId: string | null }
   | { type: 'clearMods' }
   | { type: 'addMod'; info: ProjectInfo; explicit: boolean; requiredBy: string | null; pinnedFileId: string | null }
   | { type: 'modResolving'; key: string }
@@ -28,7 +32,16 @@ export type PackAction =
   | { type: 'modFailed'; key: string; status: 'incompatible' | 'error'; error: string }
   | { type: 'setCrossRef'; key: string; modrinth?: ModrinthFileRef; curseforge?: CurseForgeFileRef }
   | { type: 'removeMods'; keys: string[] }
+  | { type: 'restoreMods'; snapshot: RemovalSnapshot }
   | { type: 'resetForRevalidation' };
+
+/** What a removal took away, so it can be undone exactly. */
+export interface RemovalSnapshot {
+  removed: PackMod[];
+  /** Previous `requiredBy` of mods that stayed but lost a parent. */
+  requiredBy: Record<string, string[]>;
+  order: string[];
+}
 
 export const DEFAULT_PROFILE: Profile = { gameVersion: '1.21.1', loader: 'fabric' };
 
@@ -36,6 +49,7 @@ export function initialPackState(): PackState {
   return {
     meta: { name: 'My Modpack', version: '1.0.0', author: 'Web Builder' },
     profile: DEFAULT_PROFILE,
+    loaderVersion: null,
     mods: {},
     order: [],
   };
@@ -80,7 +94,14 @@ export function packReducer(state: PackState, action: PackAction): PackState {
       return { ...state, meta: { ...state.meta, ...action.patch } };
 
     case 'setProfile':
-      return { ...state, profile: action.profile };
+      // A typed loader build belongs to the previous profile.
+      return { ...state, profile: action.profile, loaderVersion: null };
+
+    case 'setLoaderVersion':
+      return { ...state, loaderVersion: action.version };
+
+    case 'setPinned':
+      return updateMod(state, action.key, { pinnedFileId: action.pinnedFileId });
 
     case 'clearMods':
       return { ...state, mods: {}, order: [] };
@@ -151,6 +172,20 @@ export function packReducer(state: PackState, action: PackAction): PackState {
     case 'removeMods':
       return removeWithOrphans(state, action.keys);
 
+    case 'restoreMods': {
+      const mods = { ...state.mods };
+      for (const mod of action.snapshot.removed) {
+        if (!mods[mod.key]) mods[mod.key] = mod;
+      }
+      for (const [key, requiredBy] of Object.entries(action.snapshot.requiredBy)) {
+        const mod = mods[key];
+        if (mod) mods[key] = { ...mod, requiredBy: [...new Set([...requiredBy, ...mod.requiredBy])] };
+      }
+      const order = action.snapshot.order.filter((k) => k in mods);
+      for (const key of state.order) if (!order.includes(key)) order.push(key);
+      return { ...state, mods, order };
+    }
+
     case 'resetForRevalidation': {
       const mods: Record<string, PackMod> = {};
       for (const key of state.order) {
@@ -217,4 +252,29 @@ export function findDuplicates(state: PackState): Array<[PackMod, PackMod]> {
     }
   }
   return duplicates;
+}
+
+/** Describes what removing `keys` would take away (the mods plus orphaned dependencies). */
+export function removalSnapshot(before: PackState, after: PackState): RemovalSnapshot {
+  const removed = before.order.filter((k) => !(k in after.mods)).map((k) => before.mods[k]!);
+  const requiredBy: Record<string, string[]> = {};
+  for (const [key, mod] of Object.entries(after.mods)) {
+    const previous = before.mods[key];
+    if (previous && previous.requiredBy.length !== mod.requiredBy.length) requiredBy[key] = previous.requiredBy;
+  }
+  return { removed, requiredBy, order: before.order };
+}
+
+/**
+ * Every project key the pack covers, including cross-platform matches, so a search hit
+ * for the same mod on the other platform is recognised as already added.
+ */
+export function packCoverage(state: PackState): Map<string, PackMod> {
+  const coverage = new Map<string, PackMod>();
+  for (const mod of orderedMods(state)) {
+    coverage.set(mod.key, mod);
+    if (mod.modrinth) coverage.set(modKey('modrinth', mod.modrinth.projectId), mod);
+    if (mod.curseforge) coverage.set(modKey('curseforge', mod.curseforge.projectId), mod);
+  }
+  return coverage;
 }
