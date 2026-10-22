@@ -6,6 +6,8 @@ export type Density = 'comfortable' | 'compact';
 export type ResultView = 'grid' | 'list';
 export type SidebarSide = 'right' | 'left';
 export type SearchSort = 'relevance' | 'downloads' | 'follows' | 'newest' | 'updated';
+/** Which side a mod must run on (Modrinth metadata; CurseForge has no equivalent filter). */
+export type Environment = 'any' | 'client' | 'server';
 
 export interface Preferences {
   theme: ThemeId;
@@ -19,6 +21,9 @@ export interface Preferences {
   hideAdded: boolean;
   showDescriptions: boolean;
   sort: SearchSort;
+  environment: Environment;
+  /** The welcome guide was closed. */
+  welcomeDismissed: boolean;
 }
 
 export const THEMES: { id: ThemeId; label: string; swatch: string }[] = [
@@ -48,6 +53,12 @@ export const SORTS: { id: SearchSort; label: string }[] = [
   { id: 'updated', label: 'Recently updated' },
 ];
 
+export const ENVIRONMENTS: { id: Environment; label: string }[] = [
+  { id: 'any', label: 'Client & server' },
+  { id: 'client', label: 'Works on clients' },
+  { id: 'server', label: 'Works on servers' },
+];
+
 export const DEFAULT_PREFERENCES: Preferences = {
   theme: 'dark',
   accent: 'emerald',
@@ -59,6 +70,8 @@ export const DEFAULT_PREFERENCES: Preferences = {
   hideAdded: false,
   showDescriptions: true,
   sort: 'relevance',
+  environment: 'any',
+  welcomeDismissed: false,
 };
 
 const STORAGE_KEY = 'modpacker:preferences:v1';
@@ -74,6 +87,8 @@ const ALLOWED: { [K in keyof Preferences]: readonly Preferences[K][] } = {
   hideAdded: [true, false],
   showDescriptions: [true, false],
   sort: SORTS.map((s) => s.id),
+  environment: ENVIRONMENTS.map((e) => e.id),
+  welcomeDismissed: [true, false],
 };
 
 /** Keeps only known keys with allowed values, so a stale or tampered entry can't break the UI. */

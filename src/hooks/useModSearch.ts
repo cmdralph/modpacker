@@ -4,7 +4,7 @@ import { searchCurseForge } from '../api/curseforge';
 import { getCurseForgeAccess } from '../api/curseforgeConfig';
 import { errorMessage, isAbortError } from '../api/http';
 import { searchModrinth } from '../api/modrinth';
-import type { SearchSort } from '../state/preferences';
+import type { Environment, SearchSort } from '../state/preferences';
 import { settingsStore } from '../state/settings';
 import { useStore } from '../state/store';
 import type { ModSource, Profile, SearchHit, SourceFilter } from '../types';
@@ -22,13 +22,16 @@ export interface SourceResult {
   loadingMore: boolean;
 }
 
-const emptySource = (status: SourceStatus = 'idle'): SourceResult => ({
-  status,
-  hits: [],
-  total: 0,
-  error: null,
-  loadingMore: false,
-});
+type Results = Record<ModSource, SourceResult>;
+
+interface SearchState {
+  /** Identifies the request these results belong to; results for any other key are stale. */
+  key: string;
+  results: Results;
+  slow: boolean;
+}
+
+const emptySource = (status: SourceStatus = 'idle'): SourceResult => ({ status, hits: [], total: 0, error: null, loadingMore: false });
 
 const searchers: Record<ModSource, (params: SearchParams) => Promise<SearchPage>> = {
   modrinth: searchModrinth,
@@ -36,7 +39,7 @@ const searchers: Record<ModSource, (params: SearchParams) => Promise<SearchPage>
 };
 
 /** Alternates results from both platforms so neither dominates the first rows. */
-function interleave(a: SearchHit[], b: SearchHit[]): SearchHit[] {
+export function interleave(a: SearchHit[], b: SearchHit[]): SearchHit[] {
   const out: SearchHit[] = [];
   for (let i = 0; i < Math.max(a.length, b.length); i++) {
     if (a[i]) out.push(a[i]!);
@@ -45,14 +48,19 @@ function interleave(a: SearchHit[], b: SearchHit[]): SearchHit[] {
   return out;
 }
 
-export function useModSearch(query: string, filter: SourceFilter, profile: Profile, sort: SearchSort) {
-  const settings = useStore(settingsStore, (s) => s);
-  const curseForgeEnabled = useMemo(() => getCurseForgeAccess().mode !== 'disabled', [settings]);
-  const [results, setResults] = useState<Record<ModSource, SourceResult>>({
-    modrinth: emptySource(),
-    curseforge: emptySource(),
-  });
-  const [slow, setSlow] = useState(false);
+function initialState(key: string, active: ModSource[], curseForgeDisabled: boolean): SearchState {
+  return {
+    key,
+    slow: false,
+    results: {
+      modrinth: emptySource(active.includes('modrinth') ? 'loading' : 'idle'),
+      curseforge: emptySource(active.includes('curseforge') ? 'loading' : curseForgeDisabled ? 'disabled' : 'idle'),
+    },
+  };
+}
+
+export function useModSearch(query: string, filter: SourceFilter, profile: Profile, sort: SearchSort, environment: Environment) {
+  const curseForgeEnabled = useStore(settingsStore, () => getCurseForgeAccess().mode !== 'disabled');
   const [attempt, setAttempt] = useState(0);
   const controllerRef = useRef<AbortController | null>(null);
 
@@ -61,117 +69,96 @@ export function useModSearch(query: string, filter: SourceFilter, profile: Profi
     return wanted.filter((s) => s !== 'curseforge' || curseForgeEnabled);
   }, [filter, curseForgeEnabled]);
 
-  const patch = useCallback((source: ModSource, update: Partial<SourceResult> | ((r: SourceResult) => Partial<SourceResult>)) => {
-    setResults((prev) => {
-      const current = prev[source];
-      const next = typeof update === 'function' ? update(current) : update;
-      return { ...prev, [source]: { ...current, ...next } };
-    });
-  }, []);
+  const params = useMemo(
+    () => ({ query, gameVersion: profile.gameVersion, loader: profile.loader, sort, environment }),
+    [query, profile.gameVersion, profile.loader, sort, environment],
+  );
+  const key = JSON.stringify([params, activeSources, attempt]);
+  const cfDisabledHere = filter !== 'modrinth' && !curseForgeEnabled;
 
-  // New search whenever the query, filter, profile or CurseForge access changes.
+  const [state, setState] = useState<SearchState>(() => initialState(key, activeSources, cfDisabledHere));
+  // A new request key means fresh "loading" results – derived here instead of reset in an effect.
+  const current = state.key === key ? state : initialState(key, activeSources, cfDisabledHere);
+
+  /** Applies an update only if it still belongs to request `forKey`. */
+  const update = useCallback(
+    (forKey: string, source: ModSource, patch: (r: SourceResult) => Partial<SourceResult>) => {
+      setState((prev) => {
+        const base = prev.key === forKey ? prev : initialState(forKey, activeSources, cfDisabledHere);
+        return { ...base, results: { ...base.results, [source]: { ...base.results[source], ...patch(base.results[source]) } } };
+      });
+    },
+    [activeSources, cfDisabledHere],
+  );
+
   useEffect(() => {
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
-    setSlow(false);
+    const slowTimer = setTimeout(() => setState((prev) => (prev.key === key ? { ...prev, slow: true } : prev)), SLOW_AFTER_MS);
 
-    setResults({
-      modrinth: emptySource(activeSources.includes('modrinth') ? 'loading' : 'idle'),
-      curseforge: emptySource(
-        activeSources.includes('curseforge') ? 'loading' : filter !== 'modrinth' && !curseForgeEnabled ? 'disabled' : 'idle',
-      ),
-    });
-
-    const slowTimer = setTimeout(() => setSlow(true), SLOW_AFTER_MS);
-    const pending = activeSources.map(async (source) => {
+    const runs = activeSources.map(async (source) => {
       try {
-        const page = await searchers[source]({
-          query,
-          gameVersion: profile.gameVersion,
-          loader: profile.loader,
-          offset: 0,
-          limit: PAGE_SIZE,
-          sort,
-          signal: controller.signal,
-        });
-        patch(source, { status: 'success', hits: page.hits, total: page.total, error: null });
+        const page = await searchers[source]({ ...params, offset: 0, limit: PAGE_SIZE, signal: controller.signal });
+        update(key, source, () => ({ status: 'success', hits: page.hits, total: page.total, error: null }));
       } catch (error) {
-        if (isAbortError(error)) return;
-        patch(source, { status: 'error', error: errorMessage(error) });
+        if (!isAbortError(error)) update(key, source, () => ({ status: 'error', error: errorMessage(error) }));
       }
     });
-    void Promise.allSettled(pending).then(() => {
+    void Promise.allSettled(runs).then(() => {
       clearTimeout(slowTimer);
-      if (!controller.signal.aborted) setSlow(false);
+      setState((prev) => (prev.key === key && prev.slow ? { ...prev, slow: false } : prev));
+      return undefined;
     });
 
     return () => {
       clearTimeout(slowTimer);
       controller.abort();
     };
-  }, [query, filter, profile.gameVersion, profile.loader, sort, activeSources, curseForgeEnabled, attempt, patch]);
+  }, [key, params, activeSources, update]);
 
   const loadMore = useCallback(() => {
     const controller = controllerRef.current;
     if (!controller) return;
     for (const source of activeSources) {
-      const current = results[source];
-      if (current.status !== 'success' || current.loadingMore || current.hits.length >= current.total) continue;
-      patch(source, { loadingMore: true });
-      searchers[source]({
-        query,
-        gameVersion: profile.gameVersion,
-        loader: profile.loader,
-        offset: current.hits.length,
-        limit: PAGE_SIZE,
-        sort,
-        signal: controller.signal,
-      })
-        .then((page) =>
-          patch(source, (r) => {
+      const result = current.results[source];
+      if (result.status !== 'success' || result.loadingMore || result.hits.length >= result.total) continue;
+      update(key, source, () => ({ loadingMore: true }));
+      const offset = result.hits.length;
+      void (async () => {
+        try {
+          const page = await searchers[source]({ ...params, offset, limit: PAGE_SIZE, signal: controller.signal });
+          update(key, source, (r) => {
             const seen = new Set(r.hits.map((h) => h.key));
             return { hits: [...r.hits, ...page.hits.filter((h) => !seen.has(h.key))], total: page.total, loadingMore: false, error: null };
-          }),
-        )
-        .catch((error: unknown) => {
-          if (isAbortError(error)) return;
-          patch(source, { loadingMore: false, error: errorMessage(error) });
-        });
+          });
+        } catch (error) {
+          if (!isAbortError(error)) update(key, source, () => ({ loadingMore: false, error: errorMessage(error) }));
+        }
+      })();
     }
-  }, [activeSources, results, query, profile.gameVersion, profile.loader, sort, patch]);
+  }, [activeSources, current, key, params, update]);
 
   const retryLoadMore = useCallback(() => {
-    for (const source of activeSources) patch(source, { error: null });
+    for (const source of activeSources) update(key, source, () => ({ error: null }));
     loadMore();
-  }, [activeSources, patch, loadMore]);
+  }, [activeSources, key, update, loadMore]);
 
-  const hits = useMemo(
-    () =>
-      filter === 'all'
-        ? interleave(results.modrinth.hits, results.curseforge.hits)
-        : results[filter].hits,
-    [filter, results],
-  );
-
-  const loading = activeSources.some((s) => results[s].status === 'loading');
-  const loadingMore = activeSources.some((s) => results[s].loadingMore);
-  const hasMore = activeSources.some((s) => results[s].status === 'success' && results[s].hits.length < results[s].total);
-  /** A failed "load more" stops infinite scroll until the user retries. */
-  const loadMoreFailed = activeSources.some((s) => results[s].status === 'success' && results[s].error !== null);
-  const allFailed = activeSources.length > 0 && activeSources.every((s) => results[s].status === 'error');
+  const { results } = current;
+  const hits = useMemo(() => (filter === 'all' ? interleave(results.modrinth.hits, results.curseforge.hits) : results[filter].hits), [filter, results]);
 
   return {
     hits,
     results,
     activeSources,
     curseForgeEnabled,
-    loading,
-    loadingMore,
-    hasMore,
-    loadMoreFailed,
-    allFailed,
-    slow,
+    loading: activeSources.some((s) => results[s].status === 'loading'),
+    loadingMore: activeSources.some((s) => results[s].loadingMore),
+    hasMore: activeSources.some((s) => results[s].status === 'success' && results[s].hits.length < results[s].total),
+    /** A failed "load more" stops infinite scroll until the user retries. */
+    loadMoreFailed: activeSources.some((s) => results[s].status === 'success' && results[s].error !== null),
+    allFailed: activeSources.length > 0 && activeSources.every((s) => results[s].status === 'error'),
+    slow: current.slow,
     loadMore,
     retryLoadMore,
     retry: () => setAttempt((n) => n + 1),

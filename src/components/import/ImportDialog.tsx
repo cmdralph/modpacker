@@ -1,40 +1,48 @@
-import { CircleAlert, FileArchive, FileUp, Info, TriangleAlert } from 'lucide-react';
-import { useEffect, useRef, useState, type DragEvent } from 'react';
+import { CircleAlert, FileArchive, FileUp, Info, Link2, Paperclip, TriangleAlert } from 'lucide-react';
+import { useRef, useState, type DragEvent } from 'react';
 import { isCurseForgeConfigured } from '../../api/curseforgeConfig';
 import { errorMessage } from '../../api/http';
 import { parsePackArchive, type ParsedPack } from '../../import/parsePack';
-import { pluralize } from '../../lib/format';
+import { formatBytes, pluralize } from '../../lib/format';
 import { packController } from '../../state/controller';
-import { packStore } from '../../state/packStore';
+import { packFiles, totalSize } from '../../state/files';
+import { library } from '../../state/library';
+import { initialPackState } from '../../state/pack';
 import { useStore } from '../../state/store';
-import { ui, uiStore } from '../../state/ui';
+import { ui, uiStore, type ImportPreset } from '../../state/ui';
 import { loaderName } from '../../types';
 import { Modal } from '../ui/Modal';
 import { Button, Callout, SourceBadge, Spinner, cx } from '../ui/primitives';
 import { toast } from '../ui/Toasts';
 
-type Step = { kind: 'pick' } | { kind: 'parsing'; name: string } | { kind: 'preview'; name: string; pack: ParsedPack } | { kind: 'importing'; name: string; pack: ParsedPack };
+type Step =
+  | { kind: 'pick' }
+  | { kind: 'parsing'; name: string }
+  | { kind: 'preview'; name: string; pack: ParsedPack }
+  | { kind: 'importing'; name: string; pack: ParsedPack };
 
 export function ImportDialog() {
   const open = useStore(uiStore, (s) => s.importOpen);
-  const modCount = useStore(packStore, (s) => s.order.length);
-  const [step, setStep] = useState<Step>({ kind: 'pick' });
+  const preset = useStore(uiStore, (s) => s.importPreset);
+  // Mounted only while open, so each import starts from a clean slate.
+  return open ? <ImportFlow preset={preset} /> : null;
+}
+
+function needsCurseForge(pack: ParsedPack): boolean {
+  return pack.entries.some((e) => e.kind === 'project' && e.source === 'curseforge') && !isCurseForgeConfigured();
+}
+
+function ImportFlow({ preset }: { preset: ImportPreset | null }) {
+  const [step, setStep] = useState<Step>(() => (preset ? { kind: 'preview', name: preset.name, pack: preset.pack } : { kind: 'pick' }));
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (open) {
-      setStep({ kind: 'pick' });
-      setError(null);
-    }
-  }, [open]);
 
   async function readFile(file: File) {
     setError(null);
     setStep({ kind: 'parsing', name: file.name });
     try {
-      const pack = await parsePackArchive(await file.arrayBuffer());
+      const pack = await parsePackArchive(file);
       setStep({ kind: 'preview', name: file.name, pack });
     } catch (e) {
       setError(errorMessage(e));
@@ -52,12 +60,19 @@ export function ImportDialog() {
   async function runImport(name: string, pack: ParsedPack) {
     setStep({ kind: 'importing', name, pack });
     try {
-      const summary = await packController.importPack(pack);
+      // Lookups run first; only then is a new pack opened, so a failure changes nothing.
+      const summary = await packController.importPack(pack, () => {
+        library.create({ ...initialPackState(), profile: pack.profile });
+      });
+      await packFiles.replace(pack.files);
       ui.closeImport();
+      const unmatched = summary.unmatched.length;
       toast(
-        summary.unmatched.length > 0 ? 'warning' : 'success',
-        `Imported ${pluralize(summary.added, 'mod')} from ${name}.` +
-          (summary.unmatched.length > 0 ? ` ${summary.unmatched.length} file(s) couldn’t be identified: ${summary.unmatched.slice(0, 3).join(', ')}${summary.unmatched.length > 3 ? '…' : ''}` : ''),
+        unmatched > 0 ? 'warning' : 'success',
+        `Opened “${pack.meta.name || name}” as a new pack with ${pluralize(summary.added, 'mod')}` +
+          (pack.files.length > 0 ? ` and ${pluralize(pack.files.length, 'bundled file')}` : '') +
+          '.' +
+          (unmatched > 0 ? ` ${unmatched} couldn’t be identified: ${summary.unmatched.slice(0, 3).join(', ')}${unmatched > 3 ? '…' : ''}` : ''),
         { durationMs: 10_000 },
       );
     } catch (e) {
@@ -66,22 +81,26 @@ export function ImportDialog() {
     }
   }
 
-  const needsCurseForge = step.kind === 'preview' && step.pack.format === 'curseforge' && !isCurseForgeConfigured();
+  const blocked = step.kind === 'preview' && needsCurseForge(step.pack);
 
   return (
     <Modal
-      open={open}
+      open
       onClose={ui.closeImport}
-      icon={<FileUp className="size-6 text-accent-400" />}
-      title="Import a modpack"
-      description="Open a Modrinth .mrpack or a CurseForge .zip to keep editing it here. Every mod is pinned to the exact file the pack used."
+      icon={preset ? <Link2 className="size-6 text-accent-400" /> : <FileUp className="size-6 text-accent-400" />}
+      title={preset ? 'Someone shared a modpack with you' : 'Import a modpack'}
+      description={
+        preset
+          ? 'Have a look, then open it as a new pack. Your current packs stay untouched.'
+          : 'Open a Modrinth .mrpack or a CurseForge .zip to keep editing it here. It opens as a new pack, with every mod pinned to the exact file it used.'
+      }
       footer={
         step.kind === 'preview' || step.kind === 'importing' ? (
           <>
-            <Button variant="ghost" onClick={() => setStep({ kind: 'pick' })} disabled={step.kind === 'importing'}>
-              Choose another file
+            <Button variant="ghost" onClick={() => (preset ? ui.closeImport() : setStep({ kind: 'pick' }))} disabled={step.kind === 'importing'}>
+              {preset ? 'No thanks' : 'Choose another file'}
             </Button>
-            {needsCurseForge ? (
+            {blocked ? (
               <Button
                 variant="primary"
                 onClick={() => {
@@ -93,7 +112,7 @@ export function ImportDialog() {
               </Button>
             ) : (
               <Button variant="primary" loading={step.kind === 'importing'} onClick={() => void runImport(step.name, step.pack)}>
-                {modCount > 0 ? 'Replace pack & import' : 'Import'}
+                Open as new pack
               </Button>
             )}
           </>
@@ -140,6 +159,7 @@ export function ImportDialog() {
                   type="file"
                   accept=".mrpack,.zip,application/zip,application/x-modrinth-modpack+zip"
                   className="sr-only"
+                  tabIndex={-1}
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     e.target.value = '';
@@ -155,9 +175,10 @@ export function ImportDialog() {
           <div className="space-y-4">
             <div className="rounded-xl bg-base-800/50 p-4">
               <div className="flex items-center justify-between gap-2">
-                <p className="truncate font-bold text-base-50">{step.pack.meta.name || step.name}</p>
-                <SourceBadge source={step.pack.format} />
+                <p className="min-w-0 truncate font-bold text-base-50">{step.pack.meta.name || step.name}</p>
+                {step.pack.format !== 'link' && <SourceBadge source={step.pack.format} />}
               </div>
+              {step.pack.meta.description && <p className="mt-1 text-sm text-base-400">{step.pack.meta.description}</p>}
               <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
                 <dt className="text-base-500">Minecraft</dt>
                 <dd className="font-semibold text-base-100">{step.pack.profile.gameVersion}</dd>
@@ -175,24 +196,19 @@ export function ImportDialog() {
                 )}
               </dl>
             </div>
-            {modCount > 0 && (
-              <Callout tone="warning" icon={<TriangleAlert className="size-4" />}>
-                Importing replaces your current pack ({pluralize(modCount, 'mod')}) and switches the profile.
+            {blocked && (
+              <Callout tone="warning" icon={<TriangleAlert className="size-4" />} title="CurseForge access needed">
+                This pack lists CurseForge mods by project ID, so a CurseForge API key or proxy is needed to look them up.
               </Callout>
             )}
-            {needsCurseForge && (
-              <Callout tone="warning" icon={<TriangleAlert className="size-4" />} title="CurseForge access needed">
-                CurseForge packs reference mods by project ID, so a CurseForge API key or proxy is needed to look them up.
+            {step.pack.files.length > 0 && (
+              <Callout tone="success" icon={<Paperclip className="size-4" />}>
+                {pluralize(step.pack.files.length, 'bundled file')} ({formatBytes(totalSize(step.pack.files))}) – configs and other extras come along too.
               </Callout>
             )}
             {step.pack.skipped.length > 0 && (
               <Callout tone="info" icon={<Info className="size-4" />}>
-                {pluralize(step.pack.skipped.length, 'non-mod file')} (resource packs, shaders, …) won’t be imported.
-              </Callout>
-            )}
-            {step.pack.hasOverrides && (
-              <Callout tone="info" icon={<Info className="size-4" />}>
-                The pack’s overrides folder (configs and other bundled files) isn’t carried over. Only mods are imported.
+                {pluralize(step.pack.skipped.length, 'entry', 'entries')} (resource packs, shaders or unsafe file names) won’t be imported.
               </Callout>
             )}
             {step.kind === 'importing' && (

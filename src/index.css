@@ -14,6 +14,8 @@ html {
 
 body {
   min-height: 100vh;
+  /* Long unbroken words (mod names, file names) wrap instead of overflowing their box. */
+  overflow-wrap: break-word;
   background-color: var(--base-950);
   color: var(--base-100);
   transition: background-color 200ms ease;

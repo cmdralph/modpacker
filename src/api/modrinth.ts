@@ -178,6 +178,8 @@ export async function searchModrinth(params: SearchParams): Promise<SearchPage> 
   const loaders = compatibleLoaders(params.loader);
   // Entries inside one inner array are OR-ed, so a Quilt profile also finds Fabric mods.
   const facets = [loaders.map((l) => `categories:${l}`), [`versions:${params.gameVersion}`], ['project_type:mod']];
+  if (params.environment === 'client') facets.push(['client_side:required', 'client_side:optional']);
+  if (params.environment === 'server') facets.push(['server_side:required', 'server_side:optional']);
   const query = params.query.trim();
   const url =
     `${MODRINTH_API}/search?query=${encodeURIComponent(query)}` +
@@ -266,8 +268,7 @@ export async function getModrinthDetails(projectId: string, signal?: AbortSignal
     license: project.license?.name || project.license?.id || null,
     links,
     gallery: (project.gallery ?? [])
-      .slice()
-      .sort((a, b) => Number(b.featured) - Number(a.featured))
+      .toSorted((a, b) => Number(b.featured) - Number(a.featured))
       .slice(0, 6)
       .map((g) => ({ url: g.url, title: g.title })),
     loaders: project.loaders ?? [],
@@ -388,6 +389,6 @@ export async function getMinecraftReleases(signal?: AbortSignal): Promise<string
   const tags = await fetchJson<MrGameVersionTag[]>(`${MODRINTH_API}/tag/game_version`, { signal });
   return tags
     .filter((t) => t.version_type === 'release')
-    .sort((a, b) => Date.parse(b.date) - Date.parse(a.date))
+    .toSorted((a, b) => Date.parse(b.date) - Date.parse(a.date))
     .map((t) => t.version);
 }

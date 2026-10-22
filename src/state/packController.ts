@@ -11,7 +11,7 @@ import { getModrinthProjectInfos, lookupModrinthFilesBySha1, resolveModrinthFile
 import { curseForgeFingerprint } from '../lib/murmur2';
 import { mapLimit } from '../lib/async';
 import type { CurseForgeFileRef, ModSource, ModrinthFileRef, Profile } from '../types';
-import type { ParsedPack } from '../import/parsePack';
+import type { ImportEntry, ParsedPack } from '../import/parsePack';
 import { removalSnapshot, type PackAction, type PackState } from './pack';
 import type { Store } from './store';
 
@@ -26,7 +26,7 @@ export interface PackApi {
 
 interface ImportItem {
   info: ProjectInfo;
-  pinnedFileId: string;
+  pinnedFileId: string | null;
 }
 
 export interface ImportSummary {
@@ -35,7 +35,19 @@ export interface ImportSummary {
   unmatched: string[];
   /** Manifest entries that aren't mods (resource packs, shaders, …). */
   skipped: string[];
-  hasOverrides: boolean;
+}
+
+export interface KitResult {
+  added: string[];
+  /** Already in the pack before the kit was applied. */
+  alreadyThere: string[];
+  /** No build for the current profile – removed again so the pack stays clean. */
+  unavailable: string[];
+}
+
+export interface RefreshResult {
+  updated: { title: string; from: string; to: string }[];
+  failed: string[];
 }
 
 function chunks<T>(items: T[], size: number): T[][] {
@@ -188,14 +200,14 @@ export function createPackController(store: Store<PackState, PackAction>, api: P
     const unmatched: string[] = [];
     const signal = new AbortController().signal;
 
-    const modrinthEntries = parsed.entries.filter((e) => e.source === 'modrinth');
-    if (modrinthEntries.length > 0) {
+    const hashed = parsed.entries.filter((e) => e.kind === 'sha1');
+    if (hashed.length > 0) {
       const matches = new Map<string, ModrinthFileRef>();
-      for (const chunk of chunks(modrinthEntries.map((e) => e.sha1), 200)) {
+      for (const chunk of chunks(hashed.map((e) => e.sha1), 200)) {
         for (const [sha1, ref] of await api.modrinthBySha1(chunk, signal)) matches.set(sha1, ref);
       }
       const infos = await fetchInfos('modrinth', [...new Set([...matches.values()].map((m) => m.projectId))], signal);
-      for (const entry of modrinthEntries) {
+      for (const entry of hashed) {
         const match = matches.get(entry.sha1);
         const info = match && infos.get(match.projectId);
         if (match && info) items.push({ info, pinnedFileId: match.versionId });
@@ -203,13 +215,15 @@ export function createPackController(store: Store<PackState, PackAction>, api: P
       }
     }
 
-    const curseforgeEntries = parsed.entries.filter((e) => e.source === 'curseforge');
-    if (curseforgeEntries.length > 0) {
-      const infos = await fetchInfos('curseforge', [...new Set(curseforgeEntries.map((e) => e.projectId))], signal);
-      for (const entry of curseforgeEntries) {
-        const info = infos.get(entry.projectId);
+    for (const source of ['modrinth', 'curseforge'] as const) {
+      const projects = parsed.entries.filter((e): e is Extract<ImportEntry, { kind: 'project' }> => e.kind === 'project' && e.source === source);
+      if (projects.length === 0) continue;
+      const infos = await fetchInfos(source, [...new Set(projects.map((e) => e.projectId))], signal);
+      for (const entry of projects) {
+        // Modrinth's /projects endpoint answers with canonical IDs, so look up by slug too.
+        const info = infos.get(entry.projectId) ?? [...infos.values()].find((i) => i.slug === entry.projectId);
         if (info) items.push({ info, pinnedFileId: entry.fileId });
-        else unmatched.push(`CurseForge project ${entry.projectId}`);
+        else unmatched.push(`${source === 'modrinth' ? 'Modrinth' : 'CurseForge'} project ${entry.projectId}`);
       }
     }
     return { items, unmatched };
@@ -251,12 +265,17 @@ export function createPackController(store: Store<PackState, PackAction>, api: P
       await resolve(key);
     },
 
+    /** Cancels all in-flight work; used before swapping in a different pack. */
+    reset: restart,
+
     /**
-     * Replaces the workspace with an imported pack: profile, loader build, metadata and every mod
-     * pinned to the exact file the pack used. Throws before touching the pack if lookups fail.
+     * Fills the workspace from an imported pack: profile, loader build, metadata and every mod
+     * pinned to the exact file the pack used. All lookups happen first, so a failure leaves the
+     * current pack untouched; `beforeApply` runs just before anything changes (e.g. to open a new pack).
      */
-    async importPack(parsed: ParsedPack): Promise<ImportSummary> {
+    async importPack(parsed: ParsedPack, beforeApply?: () => void): Promise<ImportSummary> {
       const { items, unmatched } = await collectImport(parsed);
+      beforeApply?.();
       restart();
       store.dispatch({ type: 'setProfile', profile: parsed.profile });
       store.dispatch({ type: 'clearMods' });
@@ -264,7 +283,56 @@ export function createPackController(store: Store<PackState, PackAction>, api: P
       const meta = Object.fromEntries(Object.entries(parsed.meta).filter(([, v]) => typeof v === 'string' && v.trim()));
       store.dispatch({ type: 'setMeta', patch: meta });
       await mapLimit(items, RESOLVE_CONCURRENCY, (item) => addMod(item.info, { explicit: true, pinnedFileId: item.pinnedFileId }));
-      return { added: items.length, unmatched, skipped: parsed.skipped, hasOverrides: parsed.hasOverrides };
+      return { added: items.length, unmatched, skipped: parsed.skipped };
+    },
+
+    /**
+     * Adds a curated set of Modrinth projects (by slug). Projects without a build for the current
+     * profile are taken out again, so a kit never leaves broken entries behind.
+     */
+    async addKit(slugs: string[]): Promise<KitResult> {
+      const infos = await api.projectInfos('modrinth', slugs, new AbortController().signal);
+      const result: KitResult = { added: [], alreadyThere: [], unavailable: [] };
+      const fresh: ProjectInfo[] = [];
+      for (const info of infos) {
+        if (store.getState().mods[modKey('modrinth', info.projectId)]) result.alreadyThere.push(info.title);
+        else fresh.push(info);
+      }
+      await mapLimit(fresh, RESOLVE_CONCURRENCY, (info) => addMod(info, { explicit: true }));
+      const broken: string[] = [];
+      for (const info of fresh) {
+        const mod = store.getState().mods[modKey('modrinth', info.projectId)];
+        if (!mod) continue;
+        if (mod.status === 'ready') result.added.push(info.title);
+        else {
+          result.unavailable.push(info.title);
+          broken.push(mod.key);
+        }
+      }
+      if (broken.length > 0) store.dispatch({ type: 'removeMods', keys: broken });
+      return result;
+    },
+
+    /** Re-resolves every mod that isn't pinned, picking up newer compatible releases. */
+    async refreshAll(): Promise<RefreshResult> {
+      const before = store.getState();
+      const keys = before.order.filter((k) => {
+        const mod = before.mods[k];
+        return mod && !mod.pinnedFileId && mod.status !== 'resolving';
+      });
+      await mapLimit(keys, RESOLVE_CONCURRENCY, (key) => resolve(key));
+      const after = store.getState();
+      const result: RefreshResult = { updated: [], failed: [] };
+      for (const key of keys) {
+        const old = before.mods[key];
+        const now = after.mods[key];
+        if (!old || !now) continue;
+        if (now.status !== 'ready') result.failed.push(now.title);
+        else if (old.status === 'ready' && old.versionLabel !== now.versionLabel) {
+          result.updated.push({ title: now.title, from: old.versionLabel ?? '?', to: now.versionLabel ?? '?' });
+        }
+      }
+      return result;
     },
 
     clear() {

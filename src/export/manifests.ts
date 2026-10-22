@@ -24,7 +24,7 @@ export function curseForgeLoaderId(loader: Loader, loaderVersion: string): strin
 }
 
 export function buildCurseForgeManifest(input: {
-  meta: PackMeta;
+  meta: Pick<PackMeta, 'name' | 'version' | 'author'>;
   profile: Profile;
   loaderVersion: string;
   files: CurseForgeFileRef[];
@@ -105,7 +105,7 @@ function uniquePath(filename: string, used: Set<string>): string {
 }
 
 export function buildModrinthIndex(input: {
-  meta: PackMeta;
+  meta: Pick<PackMeta, 'name' | 'version'>;
   profile: Profile;
   loaderVersion: string;
   files: ModrinthFileRef[];

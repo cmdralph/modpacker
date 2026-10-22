@@ -1,4 +1,5 @@
-import JSZip from 'jszip';
+import { loadJSZip } from '../lib/zip';
+import type { PackFile } from '../state/files';
 import type { ExportFormat, PackMeta, PackMod, Profile } from '../types';
 import { buildCurseForgeManifest, buildCurseForgeModList, buildModrinthIndex } from './manifests';
 
@@ -6,15 +7,17 @@ export interface PackArchive {
   blob: Blob;
   filename: string;
   fileCount: number;
+  /** Bundled files that this format can't carry (server-only overrides in a CurseForge zip). */
+  droppedFiles: number;
 }
 
 export const MRPACK_MIME = 'application/x-modrinth-modpack+zip';
 
-export function archiveFilename(meta: PackMeta, format: ExportFormat): string {
+export function archiveFilename(meta: Pick<PackMeta, 'name' | 'version'>, format: ExportFormat): string {
   const base =
     `${meta.name}-${meta.version}`
       .normalize('NFKD')
-      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[̀-ͯ]/g, '')
       .replace(/[^\w.-]+/g, '-')
       .replace(/-{2,}/g, '-')
       .replace(/^-|-$/g, '') || 'modpack';
@@ -22,8 +25,17 @@ export function archiveFilename(meta: PackMeta, format: ExportFormat): string {
 }
 
 /**
+ * Where each bundled file goes. A .mrpack keeps the client/server split; CurseForge packs only
+ * have one `overrides/` folder, so client files are merged into it and server-only files dropped.
+ */
+export function overrideTarget(file: PackFile, format: ExportFormat): string | null {
+  if (format === 'modrinth') return `${file.root}/${file.path}`;
+  return file.root === 'server-overrides' ? null : `overrides/${file.path}`;
+}
+
+/**
  * Compiles the pack into a downloadable archive, entirely in memory.
- * Both formats get an (empty) `overrides/` folder for configs, resource packs, etc.
+ * Both formats always get an `overrides/` folder (empty unless files were bundled).
  */
 export async function buildPackArchive(input: {
   format: ExportFormat;
@@ -31,7 +43,9 @@ export async function buildPackArchive(input: {
   profile: Profile;
   loaderVersion: string;
   mods: PackMod[];
+  files?: PackFile[];
 }): Promise<PackArchive> {
+  const JSZip = await loadJSZip();
   const zip = new JSZip();
   let fileCount: number;
 
@@ -51,11 +65,19 @@ export async function buildPackArchive(input: {
       profile: input.profile,
       loaderVersion: input.loaderVersion,
       files: input.mods.flatMap((m) => (m.modrinth ? [m.modrinth] : [])),
+      summary: input.meta.description?.trim() || undefined,
     });
     fileCount = index.files.length;
     zip.file('modrinth.index.json', JSON.stringify(index, null, 2));
   }
   zip.folder('overrides');
+
+  let droppedFiles = 0;
+  for (const file of input.files ?? []) {
+    const target = overrideTarget(file, input.format);
+    if (target) zip.file(target, file.data);
+    else droppedFiles += 1;
+  }
 
   const blob = await zip.generateAsync({
     type: 'blob',
@@ -63,7 +85,7 @@ export async function buildPackArchive(input: {
     compressionOptions: { level: 9 },
     mimeType: input.format === 'modrinth' ? MRPACK_MIME : 'application/zip',
   });
-  return { blob, filename: archiveFilename(input.meta, input.format), fileCount };
+  return { blob, filename: archiveFilename(input.meta, input.format), fileCount, droppedFiles };
 }
 
 export function downloadBlob(blob: Blob, filename: string): void {
@@ -71,7 +93,7 @@ export function downloadBlob(blob: Blob, filename: string): void {
   const anchor = document.createElement('a');
   anchor.href = url;
   anchor.download = filename;
-  document.body.appendChild(anchor);
+  document.body.append(anchor);
   anchor.click();
   anchor.remove();
   // Revoke after the click has been handled so the download is not cancelled.

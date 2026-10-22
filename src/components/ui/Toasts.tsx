@@ -1,5 +1,7 @@
 import { CircleAlert, CircleCheck, Info, TriangleAlert, X } from 'lucide-react';
+import { createPortal } from 'react-dom';
 import { createStore, useStore } from '../../state/store';
+import { dialogStack } from './DialogShell';
 import { cx } from './primitives';
 
 export type ToastKind = 'info' | 'success' | 'warning' | 'error';
@@ -42,7 +44,10 @@ const STYLES: Record<ToastKind, { icon: typeof Info; className: string }> = {
 
 export function Toaster() {
   const toasts = useStore(toastStore, (s) => s);
-  return (
+  // While a modal dialog is open the rest of the page is inert, so the toasts move inside it.
+  const host = useStore(dialogStack, (s) => s.at(-1) ?? null);
+
+  const list = (
     <div aria-live="polite" className="pointer-events-none fixed inset-x-0 bottom-0 z-[60] flex flex-col items-center gap-2 p-4 sm:items-end">
       {toasts.map((t) => {
         const { icon: Icon, className } = STYLES[t.kind];
@@ -74,4 +79,5 @@ export function Toaster() {
       })}
     </div>
   );
+  return host ? createPortal(list, host) : list;
 }

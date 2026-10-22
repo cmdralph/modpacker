@@ -14,10 +14,11 @@ export function listVersionOptions(source: ModSource, projectId: string, profile
 }
 
 /** Orders Minecraft versions newest first (1.21.10 > 1.21.9 > 1.21; 26.1 > 1.21). */
+const versionParts = (v: string) => v.split(/[.-]/).map((p) => (/^\d+$/.test(p) ? Number(p) : -1));
+
 export function compareGameVersionsDesc(a: string, b: string): number {
-  const parse = (v: string) => v.split(/[.-]/).map((p) => (/^\d+$/.test(p) ? Number(p) : -1));
-  const pa = parse(a);
-  const pb = parse(b);
+  const pa = versionParts(a);
+  const pb = versionParts(b);
   for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
     const diff = (pb[i] ?? 0) - (pa[i] ?? 0);
     if (diff !== 0) return diff;
@@ -27,5 +28,5 @@ export function compareGameVersionsDesc(a: string, b: string): number {
 
 /** Keeps plain release versions (drops snapshots like 24w14a or 1.21-pre1) and sorts them newest first. */
 export function releaseVersions(versions: string[]): string[] {
-  return [...new Set(versions.filter((v) => /^\d+\.\d+(\.\d+)?$/.test(v)))].sort(compareGameVersionsDesc);
+  return [...new Set(versions.filter((v) => /^\d+\.\d+(\.\d+)?$/.test(v)))].toSorted(compareGameVersionsDesc);
 }

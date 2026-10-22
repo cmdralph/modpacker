@@ -1,16 +1,31 @@
-import { CircleAlert, Download, FileArchive, Info, LoaderCircle } from 'lucide-react';
+import { CircleAlert, Download, FileArchive, Info, LoaderCircle, Share2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { errorMessage } from '../../api/http';
 import { buildPackArchive, downloadBlob } from '../../export/packager';
 import { planExport } from '../../export/plan';
 import { useLatestLoaderVersion } from '../../hooks/useRemoteData';
 import { pluralize } from '../../lib/format';
+import { filesStore } from '../../state/files';
 import { packStore } from '../../state/packStore';
+import { encodeShare, shareUrl } from '../../share/shareLink';
 import { useStore } from '../../state/store';
 import { loaderName, type ExportFormat, type Loader } from '../../types';
 import { Button, Callout, Field, Segmented, cx, inputClass, panelClass } from '../ui/primitives';
 import { toast } from '../ui/Toasts';
 import { CrossPlatformDialog, FORMAT_LABEL } from './CrossPlatformDialog';
+import { OverridesSection } from './OverridesSection';
+
+const setLoaderOverride = (version: string | null) => packStore.dispatch({ type: 'setLoaderVersion', version });
+
+async function copyShareLink() {
+  try {
+    const url = shareUrl(await encodeShare(packStore.getState()), location.href);
+    await navigator.clipboard.writeText(url);
+    toast('success', url.length > 8000 ? 'Share link copied – it’s long, so some chat apps may cut it off.' : 'Share link copied! Anyone with it can open an exact copy of this pack.');
+  } catch (error) {
+    toast('error', `Couldn’t create a share link: ${errorMessage(error)}`);
+  }
+}
 
 export function ExportPanel({ className }: { className?: string }) {
   const state = useStore(packStore, (s) => s);
@@ -21,7 +36,6 @@ export function ExportPanel({ className }: { className?: string }) {
   const detected = useLatestLoaderVersion(profile.loader, profile.gameVersion);
   // A typed (or imported) loader build wins; the reducer clears it whenever the profile changes.
   const loaderOverride = state.loaderVersion;
-  const setLoaderOverride = (version: string | null) => packStore.dispatch({ type: 'setLoaderVersion', version });
   const loaderVersion = (loaderOverride ?? detected.version ?? '').trim();
 
   const plans = useMemo(
@@ -62,13 +76,12 @@ export function ExportPanel({ className }: { className?: string }) {
         profile: currentProfile,
         loaderVersion,
         mods: current.included,
+        files: filesStore.getState().files,
       });
       downloadBlob(archive.blob, archive.filename);
       const skipped = current.unavailable.length + current.omitted.length;
-      toast(
-        'success',
-        `Exported ${archive.filename} with ${pluralize(archive.fileCount, 'mod')}` + (skipped > 0 ? ` (${skipped} skipped).` : '.'),
-      );
+      const notes = [skipped > 0 && `${skipped} mod${skipped === 1 ? '' : 's'} skipped`, archive.droppedFiles > 0 && `${archive.droppedFiles} server-only file${archive.droppedFiles === 1 ? '' : 's'} left out`].filter(Boolean);
+      toast('success', `🎉 ${archive.filename} is ready with ${pluralize(archive.fileCount, 'mod')}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}.`);
     } catch (error) {
       toast('error', `Export failed: ${errorMessage(error)}`);
     } finally {
@@ -81,9 +94,14 @@ export function ExportPanel({ className }: { className?: string }) {
 
   return (
     <section aria-label="Export" className={cx(panelClass, 'flex flex-col gap-4 p-4', className)}>
-      <h2 className="flex items-center gap-2 text-lg font-bold text-base-50">
-        <FileArchive className="size-5 text-accent-400" aria-hidden /> Export
-      </h2>
+      <header className="flex items-center justify-between gap-2">
+        <h2 className="flex items-center gap-2 text-lg font-bold text-base-50">
+          <FileArchive className="size-5 text-accent-400" aria-hidden /> Export
+        </h2>
+        <Button size="sm" variant="ghost" icon={<Share2 className="size-4" />} onClick={() => void copyShareLink()} disabled={state.order.length === 0}>
+          Share link
+        </Button>
+      </header>
 
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="sm:col-span-2">
@@ -119,6 +137,19 @@ export function ExportPanel({ className }: { className?: string }) {
           />
         </Field>
         <div className="sm:col-span-2">
+          <Field label="Description" htmlFor="pack-description" hint="Optional. Launchers like Prism and the Modrinth App show it under the pack name.">
+            <textarea
+              id="pack-description"
+              rows={2}
+              maxLength={500}
+              placeholder="A cosy survival pack with better performance and maps…"
+              className={cx(inputClass, 'h-auto resize-y py-2')}
+              value={meta.description}
+              onChange={(e) => packStore.dispatch({ type: 'setMeta', patch: { description: e.target.value } })}
+            />
+          </Field>
+        </div>
+        <div className="sm:col-span-2">
           <Field
             label={`${loaderName(profile.loader)} loader version`}
             htmlFor="loader-version"
@@ -151,6 +182,8 @@ export function ExportPanel({ className }: { className?: string }) {
           </Field>
         </div>
       </div>
+
+      <OverridesSection />
 
       <div className="space-y-1.5">
         <span className="block text-xs font-semibold uppercase tracking-wide text-base-400">Format</span>

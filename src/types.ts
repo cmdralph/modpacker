@@ -102,6 +102,8 @@ export interface PackMeta {
   name: string;
   version: string;
   author: string;
+  /** Short blurb shown by launchers (written as the .mrpack `summary`). */
+  description: string;
 }
 
 export type ReleaseChannel = 'release' | 'beta' | 'alpha';

@@ -1,16 +1,17 @@
-import { ArrowUpDown, CircleAlert, Clock, EyeOff, KeyRound, LayoutGrid, List, PackageSearch, RefreshCw, Search, X } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowUpDown, CircleAlert, Clock, EyeOff, KeyRound, LayoutGrid, List, PackageSearch, RefreshCw, Search, Server, X } from 'lucide-react';
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { useModSearch } from '../../hooks/useModSearch';
 import { pluralize } from '../../lib/format';
 import { packCoverage } from '../../state/pack';
 import { packStore } from '../../state/packStore';
-import { SORTS, preferencesStore, setPreferences, type SearchSort } from '../../state/preferences';
+import { ENVIRONMENTS, SORTS, preferencesStore, setPreferences, type Environment, type SearchSort } from '../../state/preferences';
 import { useStore } from '../../state/store';
 import { ui } from '../../state/ui';
 import { loaderName, type ModSource, type SourceFilter } from '../../types';
 import { Button, Callout, IconButton, SOURCE_LABEL, Segmented, Select, Spinner, cx } from '../ui/primitives';
 import { ResultCard, ResultSkeleton } from './ResultCard';
+import { WelcomeHero } from './WelcomeHero';
 
 export function SearchPanel() {
   const profile = useStore(packStore, (s) => s.profile);
@@ -19,8 +20,7 @@ export function SearchPanel() {
   const [input, setInput] = useState('');
   const [filter, setFilter] = useState<SourceFilter>('all');
   const query = useDebouncedValue(input.trim(), 350);
-  const search = useModSearch(query, filter, profile, prefs.sort);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const search = useModSearch(query, filter, profile, prefs.sort, prefs.environment);
   const sentinelRef = useRef<HTMLDivElement>(null);
 
   const coverage = useMemo(() => packCoverage(pack), [pack]);
@@ -30,29 +30,20 @@ export function SearchPanel() {
   );
   const hiddenCount = search.hits.length - visibleHits.length;
 
-  // "/" focuses search from anywhere (unless the user is typing in another field).
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement;
-      if (event.key !== '/' || event.ctrlKey || event.metaKey || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable) return;
-      event.preventDefault();
-      inputRef.current?.focus();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, []);
-
   // Infinite scroll: fetch the next page when the sentinel approaches the viewport.
   const canAutoLoad = prefs.infiniteScroll && search.hasMore && !search.loading && !search.loadingMore && !search.loadMoreFailed;
-  const loadMoreRef = useRef(search.loadMore);
-  loadMoreRef.current = search.loadMore;
+  const onSentinelVisible = useEffectEvent(() => search.loadMore());
   useEffect(() => {
     const sentinel = sentinelRef.current;
     if (!sentinel || !canAutoLoad) return;
-    const observer = new IntersectionObserver((entries) => entries.some((e) => e.isIntersecting) && loadMoreRef.current(), { rootMargin: '800px 0px' });
+    // canAutoLoad flips off while a page loads and back on afterwards, so a fresh observer
+    // re-checks a sentinel that is still on screen (e.g. when "hide added" filtered a whole page).
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) onSentinelVisible();
+    }, { rootMargin: '800px 0px' });
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [canAutoLoad, visibleHits.length]);
+  }, [canAutoLoad]);
 
   const failedSources = search.activeSources.filter((s) => search.results[s].status === 'error');
   const cfDisabled = filter !== 'modrinth' && !search.curseForgeEnabled;
@@ -63,11 +54,13 @@ export function SearchPanel() {
 
   return (
     <section aria-label="Search mods" className="flex min-w-0 flex-col gap-4">
+      {pack.order.length === 0 && !prefs.welcomeDismissed && <WelcomeHero />}
+
       <div className="flex flex-col gap-3 sm:flex-row">
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute left-3.5 top-1/2 size-5 -translate-y-1/2 text-base-500" aria-hidden />
           <input
-            ref={inputRef}
+            id="mod-search"
             type="search"
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -113,6 +106,20 @@ export function SearchPanel() {
           {SORTS.map((s) => (
             <option key={s.id} value={s.id}>
               {s.label}
+            </option>
+          ))}
+        </Select>
+        <Select
+          aria-label="Environment"
+          title="Filter by where the mod runs (Modrinth results only)"
+          value={prefs.environment}
+          onChange={(e) => setPreferences({ environment: e.target.value as Environment })}
+          icon={<Server className="size-4" />}
+          className="w-52"
+        >
+          {ENVIRONMENTS.map((env) => (
+            <option key={env.id} value={env.id}>
+              {env.label}
             </option>
           ))}
         </Select>
@@ -185,13 +192,12 @@ export function SearchPanel() {
       <div
         className={cx(
           'grid',
+          // grid-cols-* use minmax(0, 1fr), so long names can never widen a column past its container.
           prefs.resultView === 'list'
-            ? compact
-              ? 'gap-1.5'
-              : 'gap-2'
+            ? cx('grid-cols-1', compact ? 'gap-1.5' : 'gap-2')
             : compact
-              ? 'gap-2 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4'
-              : 'gap-3 sm:grid-cols-2 2xl:grid-cols-3',
+              ? 'grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4'
+              : 'grid-cols-1 gap-3 sm:grid-cols-2 2xl:grid-cols-3',
         )}
       >
         {visibleHits.map((hit) => (
@@ -211,7 +217,7 @@ export function SearchPanel() {
         <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-base-800 px-6 py-14 text-center">
           <PackageSearch className="size-10 text-base-600" aria-hidden />
           <div>
-            <p className="font-semibold text-base-200">{allHidden ? 'Everything here is already in your pack' : 'No mods found'}</p>
+            <p className="font-semibold text-base-200">{allHidden ? 'You’ve already got everything here 🎒' : 'Hmm, nothing turned up'}</p>
             <p className="mt-1 text-sm text-base-500">
               {allHidden
                 ? `${pluralize(hiddenCount, 'result')} hidden because they’re already added.`
@@ -251,7 +257,7 @@ export function SearchPanel() {
         </div>
       )}
       {!search.hasMore && search.hits.length > 0 && !search.loading && (
-        <p className="pb-2 text-center text-xs text-base-600">You’ve reached the end of the results.</p>
+        <p className="pb-2 text-center text-xs text-base-600">That’s everything – you’ve reached the end of the results.</p>
       )}
     </section>
   );

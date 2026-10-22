@@ -2,8 +2,6 @@ import { LOADERS, type PackMod } from '../types';
 import { initialPackState, packReducer, type PackAction, type PackState } from './pack';
 import { createStore } from './store';
 
-const STORAGE_KEY = 'modpacker:pack:v1';
-
 function isPackState(value: unknown): value is PackState {
   if (!value || typeof value !== 'object') return false;
   const v = value as Partial<PackState>;
@@ -17,41 +15,31 @@ function isPackState(value: unknown): value is PackState {
   );
 }
 
-/** Restores the saved pack. Mods that were mid-resolution when the tab closed are flagged for retry. */
-function loadPack(): PackState {
-  try {
-    const raw = typeof localStorage === 'undefined' ? null : localStorage.getItem(STORAGE_KEY);
-    if (!raw) return initialPackState();
-    const parsed: unknown = JSON.parse(raw);
-    if (!isPackState(parsed)) return initialPackState();
-    const mods: Record<string, PackMod> = {};
-    for (const [key, mod] of Object.entries(parsed.mods)) {
-      mods[key] =
-        mod.status === 'resolving'
-          ? { ...mod, status: 'error', error: 'Resolution was interrupted. Retry to fetch the file.' }
-          : mod;
-    }
-    return {
-      ...parsed,
-      loaderVersion: typeof parsed.loaderVersion === 'string' ? parsed.loaderVersion : null,
-      mods,
-      order: parsed.order.filter((k) => k in mods),
-    };
-  } catch {
-    return initialPackState();
+/**
+ * Validates and normalises a saved pack. Mods that were mid-resolution when the tab closed are
+ * flagged for retry, and fields added in later versions get defaults.
+ */
+export function restorePackState(raw: unknown): PackState | null {
+  if (!isPackState(raw)) return null;
+  const fallback = initialPackState();
+  const mods: Record<string, PackMod> = {};
+  for (const [key, mod] of Object.entries(raw.mods)) {
+    if (!mod || typeof mod !== 'object' || typeof mod.title !== 'string') continue;
+    mods[key] = mod.status === 'resolving' ? { ...mod, status: 'error', error: 'Resolution was interrupted. Retry to fetch the file.' } : mod;
   }
+  return {
+    meta: {
+      name: raw.meta.name,
+      version: typeof raw.meta.version === 'string' ? raw.meta.version : fallback.meta.version,
+      author: typeof raw.meta.author === 'string' ? raw.meta.author : fallback.meta.author,
+      description: typeof raw.meta.description === 'string' ? raw.meta.description : '',
+    },
+    profile: raw.profile,
+    loaderVersion: typeof raw.loaderVersion === 'string' ? raw.loaderVersion : null,
+    mods,
+    order: raw.order.filter((k) => k in mods),
+  };
 }
 
-export const packStore = createStore<PackState, PackAction>(packReducer, loadPack());
-
-let saveTimer: ReturnType<typeof setTimeout> | undefined;
-packStore.subscribe(() => {
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(packStore.getState()));
-    } catch {
-      // Storage full or disabled: the pack still works for this session.
-    }
-  }, 250);
-});
+/** The pack being edited. Persistence and switching between packs live in `library.ts`. */
+export const packStore = createStore<PackState, PackAction>(packReducer, initialPackState());

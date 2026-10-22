@@ -179,7 +179,7 @@ function isUsable(file: CfFile): boolean {
 
 /** Newest release first; falls back to the newest beta, then alpha. */
 export function pickBestFile(files: CfFile[]): CfFile | null {
-  const sorted = files.filter(isUsable).sort((a, b) => Date.parse(b.fileDate) - Date.parse(a.fileDate));
+  const sorted = files.filter(isUsable).toSorted((a, b) => Date.parse(b.fileDate) - Date.parse(a.fileDate));
   return (
     sorted.find((f) => f.releaseType === 1) ??
     sorted.find((f) => f.releaseType === 2) ??
@@ -289,7 +289,7 @@ export async function listCurseForgeVersionOptions(modId: string, profile: Profi
   const files = await listCompatibleCurseForgeFiles(modId, profile, signal);
   return files
     .filter(isUsable)
-    .sort((a, b) => Date.parse(b.fileDate) - Date.parse(a.fileDate))
+    .toSorted((a, b) => Date.parse(b.fileDate) - Date.parse(a.fileDate))
     .map(toCfVersionOption);
 }
 

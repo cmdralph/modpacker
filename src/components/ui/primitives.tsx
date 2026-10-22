@@ -1,5 +1,5 @@
 import { ChevronDown, LoaderCircle } from 'lucide-react';
-import { forwardRef, useState, type ButtonHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
+import { forwardRef, useId, useState, type ButtonHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
 import type { ModSource } from '../../types';
 
 export function cx(...classes: Array<string | false | null | undefined>): string {
@@ -140,6 +140,10 @@ export function ModIcon({ src, title, size = 'md' }: { src: string | null; title
   );
 }
 
+/**
+ * Segmented control built on native radio inputs, so arrow keys, form semantics and
+ * screen readers work out of the box.
+ */
 export function Segmented<T extends string>({
   value,
   options,
@@ -149,33 +153,40 @@ export function Segmented<T extends string>({
   size = 'md',
 }: {
   value: T;
+  /** `title` doubles as the accessible name for icon-only options. */
   options: { value: T; label: ReactNode; activeClass?: string; title?: string }[];
   onChange: (value: T) => void;
   label: string;
   className?: string;
   size?: 'sm' | 'md';
 }) {
+  const name = useId();
   return (
     <div role="radiogroup" aria-label={label} className={cx('inline-flex rounded-lg bg-base-900 p-1 ring-1 ring-base-800', className)}>
       {options.map((option) => {
         const active = option.value === value;
         return (
-          <button
+          <label
             key={option.value}
-            type="button"
-            role="radio"
-            aria-checked={active}
             title={option.title}
-            onClick={() => onChange(option.value)}
             className={cx(
-              'flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-md font-semibold transition-colors',
+              'flex flex-1 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-md font-semibold transition-colors select-none',
               size === 'sm' ? 'px-2 py-1 text-xs' : 'px-3 py-1.5 text-sm',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400',
+              'has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-accent-400',
               active ? option.activeClass ?? 'bg-base-700 text-base-50 shadow' : 'text-base-400 hover:text-base-200',
             )}
           >
+            <input
+              type="radio"
+              name={name}
+              value={option.value}
+              checked={active}
+              onChange={() => onChange(option.value)}
+              aria-label={option.title}
+              className="sr-only"
+            />
             {option.label}
-          </button>
+          </label>
         );
       })}
     </div>
@@ -199,16 +210,18 @@ export function Switch({
   return (
     <div className="flex items-start justify-between gap-4">
       <div className="min-w-0">
-        <label htmlFor={id} className="cursor-pointer text-sm font-semibold text-base-100">
+        <label id={`${id}-label`} htmlFor={id} className="cursor-pointer text-sm font-semibold text-base-100">
           {label}
         </label>
-        {description && <p className="text-xs text-base-500">{description}</p>}
+        {description && <p id={`${id}-description`} className="text-xs text-base-500">{description}</p>}
       </div>
       <button
         id={id}
         type="button"
         role="switch"
         aria-checked={checked}
+        aria-labelledby={`${id}-label`}
+        aria-describedby={description ? `${id}-description` : undefined}
         onClick={() => onChange(!checked)}
         className={cx(
           'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors',

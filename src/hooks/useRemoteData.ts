@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { isAbortError } from '../api/http';
 import { fetchLatestLoaderVersion } from '../api/loaders';
 import { getMinecraftReleases } from '../api/modrinth';
 import type { Loader } from '../types';
@@ -13,13 +14,14 @@ export function useGameVersions(): { versions: string[]; fromFallback: boolean }
   const [state, setState] = useState({ versions: FALLBACK_GAME_VERSIONS, fromFallback: true });
   useEffect(() => {
     const controller = new AbortController();
-    getMinecraftReleases(controller.signal)
-      .then((versions) => {
+    void (async () => {
+      try {
+        const versions = await getMinecraftReleases(controller.signal);
         if (versions.length > 0) setState({ versions, fromFallback: false });
-      })
-      .catch(() => {
+      } catch {
         // Keep the built-in list.
-      });
+      }
+    })();
     return () => controller.abort();
   }, []);
   return state;
@@ -29,23 +31,22 @@ export type LoaderVersionStatus = 'loading' | 'found' | 'missing';
 
 /** Latest loader build for the profile; `missing` means the user must type it in. */
 export function useLatestLoaderVersion(loader: Loader, gameVersion: string) {
-  const [state, setState] = useState<{ key: string; version: string | null; status: LoaderVersionStatus }>({
-    key: '',
-    version: null,
-    status: 'loading',
-  });
   const key = `${loader}@${gameVersion}`;
+  const [state, setState] = useState<{ key: string; version: string | null; status: LoaderVersionStatus } | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
-    setState({ key, version: null, status: 'loading' });
-    fetchLatestLoaderVersion(loader, gameVersion, controller.signal)
-      .then((version) => setState({ key, version, status: version ? 'found' : 'missing' }))
-      .catch(() => {
-        if (!controller.signal.aborted) setState({ key, version: null, status: 'missing' });
-      });
+    void (async () => {
+      try {
+        const version = await fetchLatestLoaderVersion(loader, gameVersion, controller.signal);
+        setState({ key, version, status: version ? 'found' : 'missing' });
+      } catch (error) {
+        if (!isAbortError(error) && !controller.signal.aborted) setState({ key, version: null, status: 'missing' });
+      }
+    })();
     return () => controller.abort();
   }, [key, loader, gameVersion]);
 
-  return state.key === key ? state : { key, version: null, status: 'loading' as const };
+  // Results for a previous profile are ignored, so a profile switch reads as "loading" immediately.
+  return state?.key === key ? state : { key, version: null, status: 'loading' as const };
 }

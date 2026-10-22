@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { NoCompatibleVersionError, type ResolvedFile } from '../api/common';
-import { curseForgeFile, modrinthFile, projectInfo } from '../test/fixtures';
+import { curseForgeFile, fakeSha1, modrinthFile, projectInfo } from '../test/fixtures';
 import { curseForgeFingerprint } from '../lib/murmur2';
 import { initialPackState, packReducer } from './pack';
 import { createPackController, type PackApi } from './packController';
@@ -153,7 +153,7 @@ describe('version pinning and import', () => {
   it('imports a .mrpack: profile, metadata, pinned files and unmatched entries', async () => {
     const { store, controller } = setup({
       resolve: vi.fn(async (_s, id, _p, pinned) => resolved({ modrinth: modrinthFile(id, { versionId: pinned ?? 'latest' }) })),
-      modrinthBySha1: vi.fn(async () => new Map([['aa', modrinthFile('sodium', { versionId: 'sodium-v9', sha1: 'aa' })]])),
+      modrinthBySha1: vi.fn(async () => new Map([[fakeSha1('a'), modrinthFile('sodium', { versionId: 'sodium-v9', sha1: fakeSha1('a') })]])),
     });
     await controller.addMod(projectInfo('modrinth', 'old'), { explicit: true });
 
@@ -163,15 +163,15 @@ describe('version pinning and import', () => {
       profile: { gameVersion: '1.20.1', loader: 'fabric' },
       loaderVersion: '0.15.11',
       entries: [
-        { source: 'modrinth', sha1: 'aa', path: 'mods/sodium.jar' },
-        { source: 'modrinth', sha1: 'zz', path: 'mods/private.jar' },
+        { kind: 'sha1', sha1: fakeSha1('a'), path: 'mods/sodium.jar' },
+        { kind: 'sha1', sha1: fakeSha1('z'), path: 'mods/private.jar' },
       ],
       skipped: [],
-      hasOverrides: true,
+      files: [],
     });
 
     const state = store.getState();
-    expect(summary).toEqual({ added: 1, unmatched: ['private.jar'], skipped: [], hasOverrides: true });
+    expect(summary).toEqual({ added: 1, unmatched: ['private.jar'], skipped: [] });
     expect(state.profile).toEqual({ gameVersion: '1.20.1', loader: 'fabric' });
     expect(state.loaderVersion).toBe('0.15.11');
     expect(state.meta).toMatchObject({ name: 'Imported', version: '3.1.0', author: 'Web Builder' });
@@ -193,9 +193,9 @@ describe('version pinning and import', () => {
         meta: {},
         profile: { gameVersion: '1.20.1', loader: 'forge' },
         loaderVersion: null,
-        entries: [{ source: 'curseforge', projectId: '1', fileId: '2' }],
+        entries: [{ kind: 'project', source: 'curseforge', projectId: '1', fileId: '2' }],
         skipped: [],
-        hasOverrides: false,
+        files: [],
       }),
     ).rejects.toThrow(/not configured/);
     expect(store.getState().order).toEqual(['modrinth:keep']);
@@ -209,5 +209,38 @@ describe('version pinning and import', () => {
     expect(store.getState().order).toEqual([]);
     undo();
     expect(store.getState().mods['modrinth:a']!.status).toBe('ready');
+  });
+});
+
+describe('starter kits and updates', () => {
+  it('adds a kit and drops projects without a build for the profile', async () => {
+    const { store, controller } = setup({
+      projectInfos: vi.fn<PackApi['projectInfos']>(async (_s, ids) => ids.filter((id) => id !== 'missing').map((id) => projectInfo('modrinth', id))),
+      resolve: vi.fn(async (_s, id) => {
+        if (id === 'old-only') throw new NoCompatibleVersionError('none');
+        return resolved({ modrinth: modrinthFile(id) });
+      }),
+    });
+    await controller.addMod(projectInfo('modrinth', 'have'), { explicit: true });
+
+    const result = await controller.addKit(['have', 'fresh', 'old-only', 'missing']);
+    expect(result).toEqual({ added: ['fresh'], alreadyThere: ['have'], unavailable: ['old-only'] });
+    expect(store.getState().order).toEqual(['modrinth:have', 'modrinth:fresh']);
+  });
+
+  it('reports which mods moved to a newer version and leaves pinned ones alone', async () => {
+    let release = '1.0';
+    const resolve = vi.fn(async (_s: string, id: string, _p: unknown, pinned: string | null) =>
+      resolved({ versionLabel: pinned ? 'pinned' : `${id} ${release}`, modrinth: modrinthFile(id, { versionId: pinned ?? `${id}-${release}` }) }),
+    );
+    const { controller } = setup({ resolve: resolve as PackApi['resolve'] });
+    await controller.addMod(projectInfo('modrinth', 'a'), { explicit: true });
+    await controller.addMod(projectInfo('modrinth', 'b'), { explicit: true, pinnedFileId: 'b-old' });
+
+    release = '2.0';
+    resolve.mockClear();
+    const result = await controller.refreshAll();
+    expect(result.updated).toEqual([{ title: 'a', from: 'a 1.0', to: 'a 2.0' }]);
+    expect(resolve).toHaveBeenCalledTimes(1);
   });
 });
