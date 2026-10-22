@@ -1,0 +1,51 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# GITHUB_TOKEN needs these to publish a Pages deployment.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let one deployment finish before the next starts; never cancel one mid-publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Build
+        run: npx vite build
+        env:
+          # Optional: a CurseForge proxy URL (Settings → Secrets and variables → Actions → Variables).
+          # It is a public URL, not a secret. Never put a CurseForge API key here: the build
+          # inlines VITE_* values into the JavaScript bundle.
+          VITE_CURSEFORGE_PROXY_URL: ${{ vars.VITE_CURSEFORGE_PROXY_URL }}
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

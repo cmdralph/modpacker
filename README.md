@@ -32,6 +32,14 @@ npm run build      # type-check + production build into dist/
 
 The build is a static site with a relative base path, so you can host `dist/` anywhere (GitHub Pages, Netlify, Cloudflare Pages, etc.).
 
+### Deploying to GitHub Pages
+
+`.github/workflows/deploy-pages.yml` type-checks, tests, builds and publishes the site on every push to `main`. You can also run it by hand from the Actions tab.
+
+1. In the repository, open **Settings → Pages** and set **Source** to **GitHub Actions**. This only needs doing once.
+2. Optional: to enable CurseForge for every visitor, add a repository variable `VITE_CURSEFORGE_PROXY_URL` under **Settings → Secrets and variables → Actions → Variables**. Set it to your deployed proxy URL. Do not add an API key; it would be readable in the published JavaScript.
+3. Push to `main`. The site is published at `https://<owner>.github.io/<repo>/`.
+
 ## CurseForge access
 
 CurseForge's API requires an `x-api-key` header on every request. Modrinth works with no setup. The app decides how to reach CurseForge in `src/api/curseforgeConfig.ts`:
