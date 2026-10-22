@@ -1,49 +1,92 @@
-import { CircleAlert, Clock, KeyRound, PackageSearch, RefreshCw, Search, X } from 'lucide-react';
-import { useState } from 'react';
+import { ArrowUpDown, CircleAlert, Clock, EyeOff, KeyRound, LayoutGrid, List, PackageSearch, RefreshCw, Search, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { useModSearch } from '../../hooks/useModSearch';
-import { loaderName } from '../../api/modrinth';
+import { pluralize } from '../../lib/format';
+import { packCoverage } from '../../state/pack';
 import { packStore } from '../../state/packStore';
+import { SORTS, preferencesStore, setPreferences, type SearchSort } from '../../state/preferences';
 import { useStore } from '../../state/store';
-import type { ModSource, SourceFilter } from '../../types';
-import { Button, Callout, SOURCE_LABEL, Segmented } from '../ui/primitives';
+import { ui } from '../../state/ui';
+import { loaderName, type ModSource, type SourceFilter } from '../../types';
+import { Button, Callout, IconButton, SOURCE_LABEL, Segmented, Select, Spinner, cx } from '../ui/primitives';
 import { ResultCard, ResultSkeleton } from './ResultCard';
 
-export function SearchPanel({ onOpenSettings }: { onOpenSettings: () => void }) {
+export function SearchPanel() {
   const profile = useStore(packStore, (s) => s.profile);
-  const packMods = useStore(packStore, (s) => s.mods);
+  const pack = useStore(packStore, (s) => s);
+  const prefs = useStore(preferencesStore, (s) => s);
   const [input, setInput] = useState('');
   const [filter, setFilter] = useState<SourceFilter>('all');
-  const query = useDebouncedValue(input.trim(), 400);
-  const search = useModSearch(query, filter, profile);
+  const query = useDebouncedValue(input.trim(), 350);
+  const search = useModSearch(query, filter, profile, prefs.sort);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
 
-  const failedSources = search.activeSources.filter((s) => search.results[s].status === 'error' || (search.results[s].error && search.results[s].status === 'success'));
+  const coverage = useMemo(() => packCoverage(pack), [pack]);
+  const visibleHits = useMemo(
+    () => (prefs.hideAdded ? search.hits.filter((h) => !coverage.has(h.key)) : search.hits),
+    [prefs.hideAdded, search.hits, coverage],
+  );
+  const hiddenCount = search.hits.length - visibleHits.length;
+
+  // "/" focuses search from anywhere (unless the user is typing in another field).
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement;
+      if (event.key !== '/' || event.ctrlKey || event.metaKey || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable) return;
+      event.preventDefault();
+      inputRef.current?.focus();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
+
+  // Infinite scroll: fetch the next page when the sentinel approaches the viewport.
+  const canAutoLoad = prefs.infiniteScroll && search.hasMore && !search.loading && !search.loadingMore && !search.loadMoreFailed;
+  const loadMoreRef = useRef(search.loadMore);
+  loadMoreRef.current = search.loadMore;
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel || !canAutoLoad) return;
+    const observer = new IntersectionObserver((entries) => entries.some((e) => e.isIntersecting) && loadMoreRef.current(), { rootMargin: '800px 0px' });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [canAutoLoad, visibleHits.length]);
+
+  const failedSources = search.activeSources.filter((s) => search.results[s].status === 'error');
   const cfDisabled = filter !== 'modrinth' && !search.curseForgeEnabled;
-  const showSkeletons = search.loading && search.hits.length === 0;
+  const showSkeletons = search.loading && visibleHits.length === 0;
   const isEmpty = !search.loading && !search.allFailed && search.hits.length === 0 && search.activeSources.length > 0;
+  const allHidden = !search.loading && search.hits.length > 0 && visibleHits.length === 0 && !search.hasMore;
+  const compact = prefs.density === 'compact';
 
   return (
     <section aria-label="Search mods" className="flex min-w-0 flex-col gap-4">
       <div className="flex flex-col gap-3 sm:flex-row">
         <div className="relative flex-1">
-          <Search className="pointer-events-none absolute left-3.5 top-1/2 size-5 -translate-y-1/2 text-slate-500" aria-hidden />
+          <Search className="pointer-events-none absolute left-3.5 top-1/2 size-5 -translate-y-1/2 text-base-500" aria-hidden />
           <input
+            ref={inputRef}
             type="search"
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Escape' && setInput('')}
             placeholder={`Search ${loaderName(profile.loader)} mods for ${profile.gameVersion}…`}
             aria-label="Search mods"
-            className="h-12 w-full rounded-xl bg-slate-900 pl-11 pr-10 text-base text-white ring-1 ring-inset ring-slate-700 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-400 [&::-webkit-search-cancel-button]:hidden"
+            className="h-12 w-full rounded-xl bg-base-900 pl-11 pr-16 text-base text-base-50 ring-1 ring-inset ring-base-700 placeholder:text-base-500 focus:outline-none focus:ring-2 focus:ring-accent-400 [&::-webkit-search-cancel-button]:hidden"
           />
-          {input && (
+          {input ? (
             <button
               type="button"
               onClick={() => setInput('')}
-              className="absolute right-3 top-1/2 -translate-y-1/2 rounded p-1 text-slate-400 hover:text-white"
+              className="absolute right-3 top-1/2 -translate-y-1/2 rounded p-1 text-base-400 hover:text-base-50"
               aria-label="Clear search"
             >
               <X className="size-4" />
             </button>
+          ) : (
+            <kbd className="pointer-events-none absolute right-3 top-1/2 hidden -translate-y-1/2 rounded border border-base-700 px-1.5 text-xs text-base-500 sm:block">/</kbd>
           )}
         </div>
         <Segmented<SourceFilter>
@@ -53,25 +96,51 @@ export function SearchPanel({ onOpenSettings }: { onOpenSettings: () => void }) 
           className="h-12 items-stretch"
           options={[
             { value: 'all', label: 'All' },
-            { value: 'modrinth', label: 'Modrinth', activeClass: 'bg-emerald-500 text-slate-950 shadow' },
-            { value: 'curseforge', label: 'CurseForge', activeClass: 'bg-orange-500 text-slate-950 shadow' },
+            { value: 'modrinth', label: 'Modrinth', activeClass: 'bg-emerald-500 text-ink shadow' },
+            { value: 'curseforge', label: 'CurseForge', activeClass: 'bg-orange-500 text-ink shadow' },
           ]}
         />
       </div>
 
-      <div className="flex min-h-5 items-center justify-between gap-2 text-sm text-slate-400" aria-live="polite">
-        <span>
+      <div className="flex flex-wrap items-center gap-2">
+        <Select
+          aria-label="Sort results"
+          value={prefs.sort}
+          onChange={(e) => setPreferences({ sort: e.target.value as SearchSort })}
+          icon={<ArrowUpDown className="size-4" />}
+          className="w-48"
+        >
+          {SORTS.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.label}
+            </option>
+          ))}
+        </Select>
+        <IconButton
+          label={prefs.hideAdded ? 'Showing only mods not in your pack' : 'Hide mods already in your pack'}
+          tone={prefs.hideAdded ? 'active' : 'default'}
+          aria-pressed={prefs.hideAdded}
+          onClick={() => setPreferences({ hideAdded: !prefs.hideAdded })}
+          className="size-10"
+        >
+          <EyeOff className="size-4" />
+        </IconButton>
+        <Segmented
+          label="Result layout"
+          value={prefs.resultView}
+          onChange={(resultView) => setPreferences({ resultView })}
+          className="h-10"
+          options={[
+            { value: 'grid', label: <LayoutGrid className="size-4" aria-label="Grid" />, title: 'Grid view' },
+            { value: 'list', label: <List className="size-4" aria-label="List" />, title: 'List view' },
+          ]}
+        />
+        <p className="ml-auto text-xs text-base-500" aria-live="polite">
           {search.loading && search.hits.length === 0
             ? 'Searching…'
-            : query
-              ? `Results for “${query}”`
-              : `Popular ${loaderName(profile.loader)} mods for ${profile.gameVersion}`}
-        </span>
-        {search.activeSources.length > 0 && !search.loading && (
-          <span className="text-xs text-slate-500">
-            {search.activeSources.map((s) => `${SOURCE_LABEL[s]}: ${search.results[s].total.toLocaleString()}`).join(' · ')}
-          </span>
-        )}
+            : search.activeSources.map((s) => `${SOURCE_LABEL[s]}: ${search.results[s].total.toLocaleString()}`).join(' · ')}
+          {hiddenCount > 0 && ` · ${hiddenCount} hidden`}
+        </p>
       </div>
 
       {cfDisabled && (
@@ -80,7 +149,7 @@ export function SearchPanel({ onOpenSettings }: { onOpenSettings: () => void }) 
           icon={<KeyRound className="size-4" />}
           title="CurseForge needs an API key"
           action={
-            <Button size="sm" onClick={onOpenSettings}>
+            <Button size="sm" onClick={() => ui.openSettings('curseforge')}>
               Configure
             </Button>
           }
@@ -113,32 +182,76 @@ export function SearchPanel({ onOpenSettings }: { onOpenSettings: () => void }) 
         </Callout>
       )}
 
-      <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
-        {search.hits.map((hit) => (
-          <ResultCard key={hit.key} hit={hit} packStatus={packMods[hit.key]?.status ?? null} />
+      <div
+        className={cx(
+          'grid',
+          prefs.resultView === 'list'
+            ? compact
+              ? 'gap-1.5'
+              : 'gap-2'
+            : compact
+              ? 'gap-2 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4'
+              : 'gap-3 sm:grid-cols-2 2xl:grid-cols-3',
+        )}
+      >
+        {visibleHits.map((hit) => (
+          <ResultCard
+            key={hit.key}
+            hit={hit}
+            packMod={coverage.get(hit.key) ?? null}
+            view={prefs.resultView}
+            density={prefs.density}
+            showDescription={prefs.showDescriptions}
+          />
         ))}
-        {showSkeletons && Array.from({ length: 6 }, (_, i) => <ResultSkeleton key={i} />)}
+        {showSkeletons && Array.from({ length: 6 }, (_, i) => <ResultSkeleton key={i} view={prefs.resultView} />)}
       </div>
 
-      {isEmpty && (
-        <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-slate-800 px-6 py-14 text-center">
-          <PackageSearch className="size-10 text-slate-600" aria-hidden />
+      {(isEmpty || allHidden) && (
+        <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-base-800 px-6 py-14 text-center">
+          <PackageSearch className="size-10 text-base-600" aria-hidden />
           <div>
-            <p className="font-semibold text-slate-200">No mods found</p>
-            <p className="mt-1 text-sm text-slate-500">
-              Nothing matches {query ? `“${query}”` : 'this profile'} for {loaderName(profile.loader)} {profile.gameVersion}. Try another
-              search term, data source, or Minecraft version.
+            <p className="font-semibold text-base-200">{allHidden ? 'Everything here is already in your pack' : 'No mods found'}</p>
+            <p className="mt-1 text-sm text-base-500">
+              {allHidden
+                ? `${pluralize(hiddenCount, 'result')} hidden because they’re already added.`
+                : `Nothing matches ${query ? `“${query}”` : 'this profile'} for ${loaderName(profile.loader)} ${profile.gameVersion}. Try another search term, data source, or Minecraft version.`}
             </p>
           </div>
+          {allHidden && (
+            <Button size="sm" onClick={() => setPreferences({ hideAdded: false })}>
+              Show added mods
+            </Button>
+          )}
         </div>
       )}
 
+      <div ref={sentinelRef} aria-hidden className="h-px" />
+
       {search.hasMore && search.hits.length > 0 && (
-        <div className="flex justify-center pt-2">
-          <Button onClick={search.loadMore} loading={search.loadingMore}>
-            Load more
-          </Button>
+        <div className="flex flex-col items-center gap-2 pb-2">
+          {search.loadMoreFailed ? (
+            <>
+              <p className="text-sm text-rose-300">Couldn’t load more results.</p>
+              <Button size="sm" icon={<RefreshCw className="size-3.5" />} onClick={search.retryLoadMore}>
+                Try again
+              </Button>
+            </>
+          ) : prefs.infiniteScroll ? (
+            search.loadingMore && (
+              <span className="flex items-center gap-2 text-sm text-base-400">
+                <Spinner /> Loading more…
+              </span>
+            )
+          ) : (
+            <Button onClick={search.loadMore} loading={search.loadingMore}>
+              Load more
+            </Button>
+          )}
         </div>
+      )}
+      {!search.hasMore && search.hits.length > 0 && !search.loading && (
+        <p className="pb-2 text-center text-xs text-base-600">You’ve reached the end of the results.</p>
       )}
     </section>
   );

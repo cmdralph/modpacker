@@ -1,48 +1,84 @@
-import { ArrowLeftRight, Ban, Boxes, CircleAlert, ExternalLink, GitMerge, Link2, RefreshCw, Trash2, TriangleAlert } from 'lucide-react';
+import {
+  ArrowLeftRight,
+  Ban,
+  Boxes,
+  CircleAlert,
+  ClipboardCopy,
+  FileUp,
+  GitMerge,
+  Link2,
+  Monitor,
+  Pin,
+  RefreshCw,
+  Search,
+  Server,
+  SlidersHorizontal,
+  Trash2,
+  TriangleAlert,
+} from 'lucide-react';
 import { memo, useMemo, useState } from 'react';
 import { formatBytes, pluralize } from '../../lib/format';
 import { packController } from '../../state/controller';
 import { findConflicts, findDuplicates, orderedMods } from '../../state/pack';
 import { packStore } from '../../state/packStore';
+import { preferencesStore } from '../../state/preferences';
 import { useStore } from '../../state/store';
+import { ui } from '../../state/ui';
 import type { PackMod } from '../../types';
 import { Modal } from '../ui/Modal';
-import { Button, Callout, ModIcon, SOURCE_LABEL, SourceBadge, Spinner, cx } from '../ui/primitives';
+import { Button, Callout, Chip, IconButton, ModIcon, SOURCE_LABEL, Segmented, SourceBadge, Spinner, cx, inputClass, panelClass } from '../ui/primitives';
+import { toast } from '../ui/Toasts';
+
+type View = 'all' | 'mine' | 'deps' | 'problems';
+type Sort = 'added' | 'name' | 'size';
 
 function modSize(mod: PackMod): number {
-  return (mod.source === 'modrinth' ? mod.modrinth?.size : mod.curseforge?.size) ?? 0;
+  return (mod.source === 'modrinth' ? mod.modrinth?.size : mod.curseforge?.size) ?? mod.modrinth?.size ?? 0;
 }
 
-const PackModRow = memo(function PackModRow({ mod, parents }: { mod: PackMod; parents: string[] }) {
+function removeWithUndo(mod: PackMod) {
+  const undo = packController.removeMods([mod.key]);
+  toast('info', `Removed ${mod.title}${mod.explicit ? ' and its unused dependencies' : ''}.`, { action: { label: 'Undo', onClick: undo } });
+}
+
+const PackModRow = memo(function PackModRow({ mod, parents, compact }: { mod: PackMod; parents: string[]; compact: boolean }) {
   const crossAvailable = mod.source === 'modrinth' ? Boolean(mod.curseforge) : Boolean(mod.modrinth);
   const other = mod.source === 'modrinth' ? 'curseforge' : 'modrinth';
+  const env = mod.modrinth?.env;
+  const clientOnly = env?.server === 'unsupported';
+  const serverOnly = env?.client === 'unsupported';
 
   return (
     <li
       className={cx(
-        'flex items-start gap-3 rounded-xl p-3 ring-1 ring-inset',
-        mod.status === 'ready' && 'bg-slate-900 ring-slate-800',
-        mod.status === 'resolving' && 'bg-slate-900 ring-slate-800',
+        'group flex items-start gap-3 rounded-xl ring-1 ring-inset transition-colors animate-fade-in',
+        compact ? 'p-2' : 'p-3',
+        (mod.status === 'ready' || mod.status === 'resolving') && 'bg-base-900 ring-base-800 hover:ring-base-700',
         mod.status === 'incompatible' && 'bg-amber-500/5 ring-amber-500/30',
         mod.status === 'error' && 'bg-rose-500/5 ring-rose-500/30',
       )}
     >
-      <ModIcon src={mod.iconUrl} title={mod.title} size="sm" />
+      <ModIcon src={mod.iconUrl} title={mod.title} size={compact ? 'xs' : 'sm'} />
       <div className="min-w-0 flex-1 space-y-1">
         <div className="flex items-center gap-2">
-          <a href={mod.pageUrl} target="_blank" rel="noreferrer" className="truncate text-sm font-semibold text-white hover:text-emerald-300">
+          <button
+            type="button"
+            onClick={() => ui.openDetails(mod)}
+            className="truncate rounded text-left text-sm font-semibold text-base-50 hover:text-accent-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400"
+            title="Show details and versions"
+          >
             {mod.title}
-          </a>
-          <SourceBadge source={mod.source} className="hidden sm:inline-flex" />
+          </button>
+          <SourceBadge source={mod.source} compact className="hidden sm:inline-flex" />
         </div>
 
         {mod.status === 'resolving' && (
-          <p className="flex items-center gap-1.5 text-xs text-slate-400">
+          <p className="flex items-center gap-1.5 text-xs text-base-400">
             <Spinner className="size-3" /> Finding the latest compatible file…
           </p>
         )}
         {mod.status === 'ready' && (
-          <p className="truncate text-xs text-slate-400" title={mod.versionLabel ?? undefined}>
+          <p className="truncate text-xs text-base-400" title={mod.versionLabel ?? undefined}>
             {mod.versionLabel} · {formatBytes(modSize(mod))}
           </p>
         )}
@@ -53,60 +89,67 @@ const PackModRow = memo(function PackModRow({ mod, parents }: { mod: PackMod; pa
           </p>
         )}
 
-        <div className="flex flex-wrap gap-1.5">
-          {!mod.explicit && parents.length > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-md bg-sky-500/10 px-1.5 py-0.5 text-[11px] text-sky-300" title={`Required by ${parents.join(', ')}`}>
-              <GitMerge className="size-3" aria-hidden /> Dependency of {parents[0]}
-              {parents.length > 1 && ` +${parents.length - 1}`}
-            </span>
-          )}
-          {mod.status === 'ready' && crossAvailable && (
-            <span className="inline-flex items-center gap-1 rounded-md bg-slate-800 px-1.5 py-0.5 text-[11px] text-slate-300" title={`The identical file is also hosted on ${SOURCE_LABEL[other]}`}>
-              <Link2 className="size-3" aria-hidden /> Also on {SOURCE_LABEL[other]}
-            </span>
-          )}
-        </div>
+        {!compact && (
+          <div className="flex flex-wrap gap-1.5">
+            {!mod.explicit && parents.length > 0 && (
+              <Chip tone="info" icon={<GitMerge className="size-3" aria-hidden />} title={`Required by ${parents.join(', ')}`}>
+                Dependency of {parents[0]}
+                {parents.length > 1 && ` +${parents.length - 1}`}
+              </Chip>
+            )}
+            {mod.status === 'ready' && mod.pinnedFileId && (
+              <Chip tone="accent" icon={<Pin className="size-3" aria-hidden />} title="This exact version is kept even when newer ones exist">
+                Pinned
+              </Chip>
+            )}
+            {mod.status === 'ready' && clientOnly && (
+              <Chip icon={<Monitor className="size-3" aria-hidden />} title="Not needed on servers">
+                Client-only
+              </Chip>
+            )}
+            {mod.status === 'ready' && serverOnly && (
+              <Chip icon={<Server className="size-3" aria-hidden />} title="Not needed on clients">
+                Server-only
+              </Chip>
+            )}
+            {mod.status === 'ready' && crossAvailable && (
+              <Chip icon={<Link2 className="size-3" aria-hidden />} title={`The identical file is also hosted on ${SOURCE_LABEL[other]}`}>
+                Also on {SOURCE_LABEL[other]}
+              </Chip>
+            )}
+          </div>
+        )}
       </div>
 
-      <div className="flex shrink-0 items-center gap-0.5">
+      <div className="flex shrink-0 items-center opacity-100 transition-opacity sm:opacity-60 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
         {(mod.status === 'error' || mod.status === 'incompatible') && (
-          <button
-            type="button"
-            onClick={() => void packController.retry(mod.key)}
-            className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white"
-            aria-label={`Retry ${mod.title}`}
-            title="Retry"
-          >
+          <IconButton label={`Retry ${mod.title}`} onClick={() => void packController.retry(mod.key)}>
             <RefreshCw className="size-4" />
-          </button>
+          </IconButton>
         )}
-        <a
-          href={mod.pageUrl}
-          target="_blank"
-          rel="noreferrer"
-          className="hidden rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white sm:block"
-          aria-label={`Open ${mod.title} on ${SOURCE_LABEL[mod.source]}`}
-          title={`Open on ${SOURCE_LABEL[mod.source]}`}
-        >
-          <ExternalLink className="size-4" />
-        </a>
-        <button
-          type="button"
-          onClick={() => packController.removeMods([mod.key])}
-          className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-500/10 hover:text-rose-300"
-          aria-label={`Remove ${mod.title}`}
-          title={mod.explicit ? 'Remove (unused dependencies are removed too)' : 'Remove'}
-        >
+        <IconButton label={`Versions and details for ${mod.title}`} onClick={() => ui.openDetails(mod)}>
+          <SlidersHorizontal className="size-4" />
+        </IconButton>
+        <IconButton label={`Remove ${mod.title}`} tone="danger" onClick={() => removeWithUndo(mod)}>
           <Trash2 className="size-4" />
-        </button>
+        </IconButton>
       </div>
     </li>
   );
 });
 
-export function WorkspacePanel() {
+function toMarkdown(mods: PackMod[], name: string, profile: string): string {
+  const lines = mods.map((m) => `- [${m.title}](${m.pageUrl})${m.versionLabel ? ` — ${m.versionLabel}` : ''}${m.explicit ? '' : ' _(dependency)_'}`);
+  return `## ${name}\n${profile} · ${pluralize(mods.length, 'mod')}\n\n${lines.join('\n')}\n`;
+}
+
+export function WorkspacePanel({ className }: { className?: string }) {
   const state = useStore(packStore, (s) => s);
+  const compact = useStore(preferencesStore, (s) => s.density === 'compact');
   const [confirmClear, setConfirmClear] = useState(false);
+  const [filter, setFilter] = useState('');
+  const [view, setView] = useState<View>('all');
+  const [sort, setSort] = useState<Sort>('added');
 
   const mods = useMemo(() => orderedMods(state), [state]);
   const conflicts = useMemo(() => findConflicts(state), [state]);
@@ -114,34 +157,77 @@ export function WorkspacePanel() {
 
   const ready = mods.filter((m) => m.status === 'ready');
   const resolving = mods.filter((m) => m.status === 'resolving').length;
-  const problems = mods.filter((m) => m.status === 'incompatible' || m.status === 'error').length;
-  const dependencies = mods.filter((m) => !m.explicit).length;
+  const problems = mods.filter((m) => m.status === 'incompatible' || m.status === 'error');
+  const dependencies = mods.filter((m) => !m.explicit);
   const totalSize = ready.reduce((sum, m) => sum + modSize(m), 0);
 
+  const shown = useMemo(() => {
+    const needle = filter.trim().toLowerCase();
+    const list = mods.filter((m) => {
+      if (view === 'mine' && !m.explicit) return false;
+      if (view === 'deps' && m.explicit) return false;
+      if (view === 'problems' && m.status !== 'incompatible' && m.status !== 'error') return false;
+      return !needle || m.title.toLowerCase().includes(needle) || m.author.toLowerCase().includes(needle);
+    });
+    if (sort === 'name') return [...list].sort((a, b) => a.title.localeCompare(b.title));
+    if (sort === 'size') return [...list].sort((a, b) => modSize(b) - modSize(a));
+    return list;
+  }, [mods, filter, view, sort]);
+
+  async function copyList() {
+    const text = toMarkdown(mods, state.meta.name, `${state.profile.loader} ${state.profile.gameVersion}`);
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('success', 'Mod list copied as Markdown.');
+    } catch {
+      toast('error', 'Your browser blocked clipboard access.');
+    }
+  }
+
   return (
-    <section id="workspace" aria-label="Pack workspace" className="flex flex-col gap-3 rounded-2xl bg-slate-900/60 p-4 ring-1 ring-slate-800">
-      <header className="flex items-center justify-between gap-2">
-        <div>
-          <h2 className="flex items-center gap-2 text-lg font-bold text-white">
-            <Boxes className="size-5 text-emerald-400" aria-hidden /> Your Pack
+    <section aria-label="Pack workspace" className={cx(panelClass, 'flex flex-col gap-3 p-4', className)}>
+      <header className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h2 className="flex items-center gap-2 text-lg font-bold text-base-50">
+            <Boxes className="size-5 text-accent-400" aria-hidden /> Your Pack
           </h2>
-          <p className="text-xs text-slate-400">
+          <p className="text-xs text-base-400">
             {pluralize(mods.length, 'mod')}
-            {dependencies > 0 && ` · ${pluralize(dependencies, 'dependency', 'dependencies')}`}
+            {dependencies.length > 0 && ` · ${pluralize(dependencies.length, 'dependency', 'dependencies')}`}
             {ready.length > 0 && ` · ${formatBytes(totalSize)}`}
             {resolving > 0 && ` · resolving ${resolving}`}
           </p>
         </div>
-        {mods.length > 0 && (
-          <Button size="sm" variant="ghost" icon={<Trash2 className="size-3.5" />} onClick={() => setConfirmClear(true)}>
-            Clear
-          </Button>
-        )}
+        <div className="flex items-center">
+          <IconButton label="Import a .mrpack or CurseForge .zip" onClick={ui.openImport}>
+            <FileUp className="size-4" />
+          </IconButton>
+          {mods.length > 0 && (
+            <>
+              <IconButton label="Copy mod list as Markdown" onClick={() => void copyList()}>
+                <ClipboardCopy className="size-4" />
+              </IconButton>
+              <IconButton label="Clear pack" tone="danger" onClick={() => setConfirmClear(true)}>
+                <Trash2 className="size-4" />
+              </IconButton>
+            </>
+          )}
+        </div>
       </header>
 
-      {problems > 0 && (
-        <Callout tone="warning" icon={<TriangleAlert className="size-4" />}>
-          {pluralize(problems, 'mod')} {problems === 1 ? 'has' : 'have'} no usable file for this profile and will be skipped on export.
+      {problems.length > 0 && (
+        <Callout
+          tone="warning"
+          icon={<TriangleAlert className="size-4" />}
+          action={
+            view !== 'problems' && (
+              <Button size="xs" onClick={() => setView('problems')}>
+                Show
+              </Button>
+            )
+          }
+        >
+          {pluralize(problems.length, 'mod')} {problems.length === 1 ? 'has' : 'have'} no usable file for this profile and will be skipped on export.
         </Callout>
       )}
       {conflicts.map(({ mod, other }) => (
@@ -150,23 +236,81 @@ export function WorkspacePanel() {
         </Callout>
       ))}
       {duplicates.map(([a, b]) => (
-        <Callout key={`${a.key}=${b.key}`} tone="warning" icon={<ArrowLeftRight className="size-4" />} title="Same mod added twice">
-          {a.title} ({SOURCE_LABEL[a.source]}) and {b.title} ({SOURCE_LABEL[b.source]}) are the identical file. Remove one to avoid a duplicate jar.
+        <Callout
+          key={`${a.key}=${b.key}`}
+          tone="warning"
+          icon={<ArrowLeftRight className="size-4" />}
+          title="Same mod added twice"
+          action={
+            <Button size="xs" onClick={() => removeWithUndo(b)}>
+              Remove one
+            </Button>
+          }
+        >
+          {a.title} ({SOURCE_LABEL[a.source]}) and {b.title} ({SOURCE_LABEL[b.source]}) are the identical file.
         </Callout>
       ))}
 
       {mods.length === 0 ? (
-        <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-slate-800 px-4 py-10 text-center">
-          <Boxes className="size-9 text-slate-700" aria-hidden />
-          <p className="text-sm font-semibold text-slate-300">Your pack is empty</p>
-          <p className="text-xs text-slate-500">Search for mods and hit “Add to Pack”. Required dependencies are added automatically.</p>
+        <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-base-800 px-4 py-10 text-center">
+          <Boxes className="size-9 text-base-700" aria-hidden />
+          <div>
+            <p className="text-sm font-semibold text-base-300">Your pack is empty</p>
+            <p className="mt-1 text-xs text-base-500">Search for mods and hit “Add”. Required dependencies are added automatically.</p>
+          </div>
+          <Button size="sm" icon={<FileUp className="size-3.5" />} onClick={ui.openImport}>
+            Import an existing pack
+          </Button>
         </div>
       ) : (
-        <ul className="flex max-h-[50vh] flex-col gap-2 overflow-y-auto pr-1 lg:max-h-[calc(100vh-30rem)] lg:min-h-48">
-          {mods.map((mod) => (
-            <PackModRow key={mod.key} mod={mod} parents={mod.requiredBy.map((k) => state.mods[k]?.title ?? k)} />
-          ))}
-        </ul>
+        <>
+          {mods.length > 5 && (
+            <div className="flex flex-col gap-2">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-base-500" aria-hidden />
+                <input
+                  type="search"
+                  value={filter}
+                  onChange={(e) => setFilter(e.target.value)}
+                  placeholder="Filter your pack…"
+                  aria-label="Filter pack"
+                  className={cx(inputClass, 'h-9 pl-9')}
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <Segmented<View>
+                  size="sm"
+                  label="Show"
+                  value={view}
+                  onChange={setView}
+                  className="flex-1"
+                  options={[
+                    { value: 'all', label: `All ${mods.length}` },
+                    { value: 'mine', label: `Mine ${mods.length - dependencies.length}` },
+                    { value: 'deps', label: `Deps ${dependencies.length}` },
+                    ...(problems.length > 0 ? [{ value: 'problems' as const, label: `Issues ${problems.length}` }] : []),
+                  ]}
+                />
+                <select
+                  aria-label="Sort pack"
+                  value={sort}
+                  onChange={(e) => setSort(e.target.value as Sort)}
+                  className="h-8 rounded-lg bg-base-900 px-2 text-xs font-semibold text-base-200 ring-1 ring-inset ring-base-700 focus:outline-none focus:ring-2 focus:ring-accent-400"
+                >
+                  <option value="added">Added</option>
+                  <option value="name">Name</option>
+                  <option value="size">Size</option>
+                </select>
+              </div>
+            </div>
+          )}
+          <ul className={cx('flex flex-col', compact ? 'gap-1.5' : 'gap-2')}>
+            {shown.map((mod) => (
+              <PackModRow key={mod.key} mod={mod} compact={compact} parents={mod.requiredBy.map((k) => state.mods[k]?.title ?? k)} />
+            ))}
+          </ul>
+          {shown.length === 0 && <p className="py-4 text-center text-sm text-base-500">No mods match this filter.</p>}
+        </>
       )}
 
       <Modal
@@ -174,7 +318,7 @@ export function WorkspacePanel() {
         onClose={() => setConfirmClear(false)}
         icon={<Trash2 className="size-6 text-rose-400" />}
         title="Clear the pack?"
-        description={`All ${pluralize(mods.length, 'mod')} will be removed from the workspace. This cannot be undone.`}
+        description={`All ${pluralize(mods.length, 'mod')} will be removed from the workspace.`}
         footer={
           <>
             <Button variant="ghost" onClick={() => setConfirmClear(false)}>
@@ -183,8 +327,9 @@ export function WorkspacePanel() {
             <Button
               variant="danger"
               onClick={() => {
-                packController.clear();
+                const undo = packController.removeMods(state.order);
                 setConfirmClear(false);
+                toast('info', 'Pack cleared.', { action: { label: 'Undo', onClick: undo } });
               }}
             >
               Clear pack

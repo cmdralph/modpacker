@@ -11,7 +11,8 @@ import { getModrinthProjectInfos, lookupModrinthFilesBySha1, resolveModrinthFile
 import { curseForgeFingerprint } from '../lib/murmur2';
 import { mapLimit } from '../lib/async';
 import type { CurseForgeFileRef, ModSource, ModrinthFileRef, Profile } from '../types';
-import type { PackAction, PackState } from './pack';
+import type { ParsedPack } from '../import/parsePack';
+import { removalSnapshot, type PackAction, type PackState } from './pack';
 import type { Store } from './store';
 
 /** Remote operations the controller depends on – injectable for tests. */
@@ -21,6 +22,26 @@ export interface PackApi {
   modrinthBySha1(sha1s: string[], signal?: AbortSignal): Promise<Map<string, ModrinthFileRef>>;
   curseForgeByFingerprint(fingerprints: number[], signal?: AbortSignal): Promise<Map<number, CurseForgeFileRef>>;
   downloadBytes(url: string, signal?: AbortSignal): Promise<Uint8Array>;
+}
+
+interface ImportItem {
+  info: ProjectInfo;
+  pinnedFileId: string;
+}
+
+export interface ImportSummary {
+  added: number;
+  /** Files no platform lookup could identify. */
+  unmatched: string[];
+  /** Manifest entries that aren't mods (resource packs, shaders, …). */
+  skipped: string[];
+  hasOverrides: boolean;
+}
+
+function chunks<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
 }
 
 export const liveApi: PackApi = {
@@ -51,6 +72,8 @@ export function createPackController(store: Store<PackState, PackAction>, api: P
   let epoch = 0;
   let controller = new AbortController();
   const inFlight = new Set<string>();
+  /** Mods whose inputs (e.g. pinned version) changed mid-resolution and must resolve again. */
+  const rerun = new Set<string>();
 
   async function addDependencies(parentKey: string, deps: DependencyRef[], currentEpoch: number) {
     const bySource = new Map<ModSource, DependencyRef[]>();
@@ -99,7 +122,11 @@ export function createPackController(store: Store<PackState, PackAction>, api: P
 
   async function resolve(key: string): Promise<void> {
     const mod = store.getState().mods[key];
-    if (!mod || inFlight.has(key)) return;
+    if (!mod) return;
+    if (inFlight.has(key)) {
+      rerun.add(key);
+      return;
+    }
     inFlight.add(key);
     const currentEpoch = epoch;
     const { profile } = store.getState();
@@ -129,6 +156,7 @@ export function createPackController(store: Store<PackState, PackAction>, api: P
       store.dispatch({ type: 'modFailed', key, status: incompatible ? 'incompatible' : 'error', error: errorMessage(error) });
     } finally {
       inFlight.delete(key);
+      if (rerun.delete(key) && currentEpoch === epoch) void resolve(key);
     }
   }
 
@@ -137,7 +165,7 @@ export function createPackController(store: Store<PackState, PackAction>, api: P
     options: { explicit: boolean; requiredBy?: string | null; pinnedFileId?: string | null },
   ): Promise<void> {
     const key = modKey(info.source, info.projectId);
-    const existed = Boolean(store.getState().mods[key]);
+    const existing = store.getState().mods[key];
     store.dispatch({
       type: 'addMod',
       info,
@@ -145,7 +173,54 @@ export function createPackController(store: Store<PackState, PackAction>, api: P
       requiredBy: options.requiredBy ?? null,
       pinnedFileId: options.pinnedFileId ?? null,
     });
-    if (!existed) await resolve(key);
+    if (!existing) {
+      await resolve(key);
+    } else if (options.explicit && options.pinnedFileId && existing.pinnedFileId !== options.pinnedFileId) {
+      // e.g. an imported pack names an exact file for a mod already pulled in as a dependency.
+      store.dispatch({ type: 'setPinned', key, pinnedFileId: options.pinnedFileId });
+      await resolve(key);
+    }
+  }
+
+  /** Looks up display metadata for imported entries before the current pack is touched. */
+  async function collectImport(parsed: ParsedPack): Promise<{ items: ImportItem[]; unmatched: string[] }> {
+    const items: ImportItem[] = [];
+    const unmatched: string[] = [];
+    const signal = new AbortController().signal;
+
+    const modrinthEntries = parsed.entries.filter((e) => e.source === 'modrinth');
+    if (modrinthEntries.length > 0) {
+      const matches = new Map<string, ModrinthFileRef>();
+      for (const chunk of chunks(modrinthEntries.map((e) => e.sha1), 200)) {
+        for (const [sha1, ref] of await api.modrinthBySha1(chunk, signal)) matches.set(sha1, ref);
+      }
+      const infos = await fetchInfos('modrinth', [...new Set([...matches.values()].map((m) => m.projectId))], signal);
+      for (const entry of modrinthEntries) {
+        const match = matches.get(entry.sha1);
+        const info = match && infos.get(match.projectId);
+        if (match && info) items.push({ info, pinnedFileId: match.versionId });
+        else unmatched.push(entry.path.replace(/^mods\//, ''));
+      }
+    }
+
+    const curseforgeEntries = parsed.entries.filter((e) => e.source === 'curseforge');
+    if (curseforgeEntries.length > 0) {
+      const infos = await fetchInfos('curseforge', [...new Set(curseforgeEntries.map((e) => e.projectId))], signal);
+      for (const entry of curseforgeEntries) {
+        const info = infos.get(entry.projectId);
+        if (info) items.push({ info, pinnedFileId: entry.fileId });
+        else unmatched.push(`CurseForge project ${entry.projectId}`);
+      }
+    }
+    return { items, unmatched };
+  }
+
+  async function fetchInfos(source: ModSource, ids: string[], signal: AbortSignal): Promise<Map<string, ProjectInfo>> {
+    const infos = new Map<string, ProjectInfo>();
+    for (const chunk of chunks(ids, 100)) {
+      for (const info of await api.projectInfos(source, chunk, signal)) infos.set(info.projectId, info);
+    }
+    return infos;
   }
 
   function restart() {
@@ -161,8 +236,35 @@ export function createPackController(store: Store<PackState, PackAction>, api: P
     /** Re-runs resolution (and dependency expansion) for one mod. */
     retry: (key: string) => resolve(key),
 
-    removeMods(keys: string[]) {
+    /** Removes mods (and orphaned dependencies). Returns an undo function. */
+    removeMods(keys: string[]): () => void {
+      const before = store.getState();
       store.dispatch({ type: 'removeMods', keys });
+      const snapshot = removalSnapshot(before, store.getState());
+      return () => store.dispatch({ type: 'restoreMods', snapshot });
+    },
+
+    /** Pins a specific file/version (null = always use the latest compatible one) and re-resolves. */
+    async setVersion(key: string, fileId: string | null) {
+      if (!store.getState().mods[key]) return;
+      store.dispatch({ type: 'setPinned', key, pinnedFileId: fileId });
+      await resolve(key);
+    },
+
+    /**
+     * Replaces the workspace with an imported pack: profile, loader build, metadata and every mod
+     * pinned to the exact file the pack used. Throws before touching the pack if lookups fail.
+     */
+    async importPack(parsed: ParsedPack): Promise<ImportSummary> {
+      const { items, unmatched } = await collectImport(parsed);
+      restart();
+      store.dispatch({ type: 'setProfile', profile: parsed.profile });
+      store.dispatch({ type: 'clearMods' });
+      store.dispatch({ type: 'setLoaderVersion', version: parsed.loaderVersion });
+      const meta = Object.fromEntries(Object.entries(parsed.meta).filter(([, v]) => typeof v === 'string' && v.trim()));
+      store.dispatch({ type: 'setMeta', patch: meta });
+      await mapLimit(items, RESOLVE_CONCURRENCY, (item) => addMod(item.info, { explicit: true, pinnedFileId: item.pinnedFileId }));
+      return { added: items.length, unmatched, skipped: parsed.skipped, hasOverrides: parsed.hasOverrides };
     },
 
     clear() {

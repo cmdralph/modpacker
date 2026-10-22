@@ -15,3 +15,11 @@ export function formatCount(value: number): string {
 export function pluralize(count: number, singular: string, plural = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : plural}`;
 }
+
+const dateFormat = new Intl.DateTimeFormat('en', { year: 'numeric', month: 'short', day: 'numeric' });
+
+export function formatDate(iso: string | null | undefined): string {
+  if (!iso) return 'Unknown date';
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? 'Unknown date' : dateFormat.format(date);
+}

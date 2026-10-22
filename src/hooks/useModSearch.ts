@@ -4,6 +4,7 @@ import { searchCurseForge } from '../api/curseforge';
 import { getCurseForgeAccess } from '../api/curseforgeConfig';
 import { errorMessage, isAbortError } from '../api/http';
 import { searchModrinth } from '../api/modrinth';
+import type { SearchSort } from '../state/preferences';
 import { settingsStore } from '../state/settings';
 import { useStore } from '../state/store';
 import type { ModSource, Profile, SearchHit, SourceFilter } from '../types';
@@ -44,7 +45,7 @@ function interleave(a: SearchHit[], b: SearchHit[]): SearchHit[] {
   return out;
 }
 
-export function useModSearch(query: string, filter: SourceFilter, profile: Profile) {
+export function useModSearch(query: string, filter: SourceFilter, profile: Profile, sort: SearchSort) {
   const settings = useStore(settingsStore, (s) => s);
   const curseForgeEnabled = useMemo(() => getCurseForgeAccess().mode !== 'disabled', [settings]);
   const [results, setResults] = useState<Record<ModSource, SourceResult>>({
@@ -91,6 +92,7 @@ export function useModSearch(query: string, filter: SourceFilter, profile: Profi
           loader: profile.loader,
           offset: 0,
           limit: PAGE_SIZE,
+          sort,
           signal: controller.signal,
         });
         patch(source, { status: 'success', hits: page.hits, total: page.total, error: null });
@@ -108,7 +110,7 @@ export function useModSearch(query: string, filter: SourceFilter, profile: Profi
       clearTimeout(slowTimer);
       controller.abort();
     };
-  }, [query, filter, profile.gameVersion, profile.loader, activeSources, curseForgeEnabled, attempt, patch]);
+  }, [query, filter, profile.gameVersion, profile.loader, sort, activeSources, curseForgeEnabled, attempt, patch]);
 
   const loadMore = useCallback(() => {
     const controller = controllerRef.current;
@@ -123,12 +125,13 @@ export function useModSearch(query: string, filter: SourceFilter, profile: Profi
         loader: profile.loader,
         offset: current.hits.length,
         limit: PAGE_SIZE,
+        sort,
         signal: controller.signal,
       })
         .then((page) =>
           patch(source, (r) => {
             const seen = new Set(r.hits.map((h) => h.key));
-            return { hits: [...r.hits, ...page.hits.filter((h) => !seen.has(h.key))], total: page.total, loadingMore: false };
+            return { hits: [...r.hits, ...page.hits.filter((h) => !seen.has(h.key))], total: page.total, loadingMore: false, error: null };
           }),
         )
         .catch((error: unknown) => {
@@ -136,7 +139,12 @@ export function useModSearch(query: string, filter: SourceFilter, profile: Profi
           patch(source, { loadingMore: false, error: errorMessage(error) });
         });
     }
-  }, [activeSources, results, query, profile.gameVersion, profile.loader, patch]);
+  }, [activeSources, results, query, profile.gameVersion, profile.loader, sort, patch]);
+
+  const retryLoadMore = useCallback(() => {
+    for (const source of activeSources) patch(source, { error: null });
+    loadMore();
+  }, [activeSources, patch, loadMore]);
 
   const hits = useMemo(
     () =>
@@ -149,6 +157,8 @@ export function useModSearch(query: string, filter: SourceFilter, profile: Profi
   const loading = activeSources.some((s) => results[s].status === 'loading');
   const loadingMore = activeSources.some((s) => results[s].loadingMore);
   const hasMore = activeSources.some((s) => results[s].status === 'success' && results[s].hits.length < results[s].total);
+  /** A failed "load more" stops infinite scroll until the user retries. */
+  const loadMoreFailed = activeSources.some((s) => results[s].status === 'success' && results[s].error !== null);
   const allFailed = activeSources.length > 0 && activeSources.every((s) => results[s].status === 'error');
 
   return {
@@ -159,9 +169,11 @@ export function useModSearch(query: string, filter: SourceFilter, profile: Profi
     loading,
     loadingMore,
     hasMore,
+    loadMoreFailed,
     allFailed,
     slow,
     loadMore,
+    retryLoadMore,
     retry: () => setAttempt((n) => n + 1),
   };
 }

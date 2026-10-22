@@ -1,29 +1,27 @@
 import { CircleAlert, Download, FileArchive, Info, LoaderCircle } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { errorMessage } from '../../api/http';
-import { loaderName } from '../../api/modrinth';
 import { buildPackArchive, downloadBlob } from '../../export/packager';
 import { planExport } from '../../export/plan';
 import { useLatestLoaderVersion } from '../../hooks/useRemoteData';
 import { pluralize } from '../../lib/format';
 import { packStore } from '../../state/packStore';
 import { useStore } from '../../state/store';
-import type { ExportFormat, Loader } from '../../types';
-import { Button, Callout, Field, Segmented, inputClass } from '../ui/primitives';
+import { loaderName, type ExportFormat, type Loader } from '../../types';
+import { Button, Callout, Field, Segmented, cx, inputClass, panelClass } from '../ui/primitives';
 import { toast } from '../ui/Toasts';
 import { CrossPlatformDialog, FORMAT_LABEL } from './CrossPlatformDialog';
 
-export function ExportPanel() {
+export function ExportPanel({ className }: { className?: string }) {
   const state = useStore(packStore, (s) => s);
   const { meta, profile } = state;
   const [format, setFormat] = useState<ExportFormat>('modrinth');
   const [dialogFormat, setDialogFormat] = useState<ExportFormat | null>(null);
   const [exporting, setExporting] = useState(false);
   const detected = useLatestLoaderVersion(profile.loader, profile.gameVersion);
-  const [loaderOverride, setLoaderOverride] = useState<string | null>(null);
-
-  // A typed loader version only applies to the profile it was typed for.
-  useEffect(() => setLoaderOverride(null), [profile.loader, profile.gameVersion]);
+  // A typed (or imported) loader build wins; the reducer clears it whenever the profile changes.
+  const loaderOverride = state.loaderVersion;
+  const setLoaderOverride = (version: string | null) => packStore.dispatch({ type: 'setLoaderVersion', version });
   const loaderVersion = (loaderOverride ?? detected.version ?? '').trim();
 
   const plans = useMemo(
@@ -82,9 +80,9 @@ export function ExportPanel() {
   const disabled = exporting || plan.pending.length > 0 || exportable + plan.crossPlatform.length === 0 || !loaderVersion;
 
   return (
-    <section aria-label="Export" className="flex flex-col gap-4 rounded-2xl bg-slate-900/60 p-4 ring-1 ring-slate-800">
-      <h2 className="flex items-center gap-2 text-lg font-bold text-white">
-        <FileArchive className="size-5 text-emerald-400" aria-hidden /> Export
+    <section aria-label="Export" className={cx(panelClass, 'flex flex-col gap-4 p-4', className)}>
+      <h2 className="flex items-center gap-2 text-lg font-bold text-base-50">
+        <FileArchive className="size-5 text-accent-400" aria-hidden /> Export
       </h2>
 
       <div className="grid gap-3 sm:grid-cols-2">
@@ -131,6 +129,13 @@ export function ExportPanel() {
                 </span>
               ) : detected.status === 'missing' && loaderOverride === null ? (
                 <span className="text-amber-300">Couldn’t detect the latest build automatically – type it in (e.g. {exampleVersion(profile.loader)}).</span>
+              ) : loaderOverride !== null && detected.version && loaderOverride !== detected.version ? (
+                <span>
+                  Custom build.{' '}
+                  <button type="button" className="font-semibold text-accent-300 hover:underline" onClick={() => setLoaderOverride(null)}>
+                    Use latest ({detected.version})
+                  </button>
+                </span>
               ) : (
                 `Written to the manifest as the required loader for Minecraft ${profile.gameVersion}.`
               )
@@ -148,7 +153,7 @@ export function ExportPanel() {
       </div>
 
       <div className="space-y-1.5">
-        <span className="block text-xs font-semibold uppercase tracking-wide text-slate-400">Format</span>
+        <span className="block text-xs font-semibold uppercase tracking-wide text-base-400">Format</span>
         <Segmented<ExportFormat>
           label="Export format"
           value={format}
@@ -158,12 +163,12 @@ export function ExportPanel() {
             {
               value: 'modrinth',
               label: <FormatLabel name=".mrpack" available={plans.modrinth.included.length} total={plans.modrinth.included.length + plans.modrinth.crossPlatform.length} />,
-              activeClass: 'bg-emerald-500 text-slate-950 shadow',
+              activeClass: 'bg-emerald-500 text-ink shadow',
             },
             {
               value: 'curseforge',
               label: <FormatLabel name="CurseForge .zip" available={plans.curseforge.included.length} total={plans.curseforge.included.length + plans.curseforge.crossPlatform.length} />,
-              activeClass: 'bg-orange-500 text-slate-950 shadow',
+              activeClass: 'bg-orange-500 text-ink shadow',
             },
           ]}
         />
@@ -174,6 +179,11 @@ export function ExportPanel() {
           <Callout tone="warning" icon={<CircleAlert className="size-4" />}>
             {pluralize(plan.crossPlatform.length, `${format === 'curseforge' ? 'Modrinth' : 'CurseForge'}-only mod`)} can’t be referenced by a{' '}
             {FORMAT_LABEL[format]}. You’ll be asked how to handle {plan.crossPlatform.length === 1 ? 'it' : 'them'}.
+          </Callout>
+        )}
+        {format === 'curseforge' && profile.loader === 'quilt' && (
+          <Callout tone="info" icon={<Info className="size-4" />}>
+            Launcher support for Quilt in CurseForge packs varies. A .mrpack is the safer choice for Quilt.
           </Callout>
         )}
         {plan.unavailable.length > 0 && (
@@ -225,5 +235,5 @@ function FormatLabel({ name, available, total }: { name: string; available: numb
 }
 
 function exampleVersion(loader: Loader): string {
-  return { fabric: '0.16.14', forge: '47.4.0', neoforge: '21.1.172' }[loader];
+  return { fabric: '0.16.14', quilt: '0.29.1', forge: '47.4.0', neoforge: '21.1.172' }[loader];
 }

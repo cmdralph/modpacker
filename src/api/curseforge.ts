@@ -1,4 +1,14 @@
-import type { CurseForgeFileRef, Loader, Profile, SearchHit } from '../types';
+import {
+  compatibleLoaders,
+  loaderName,
+  type CurseForgeFileRef,
+  type Loader,
+  type ProjectDetails,
+  type Profile,
+  type ReleaseChannel,
+  type SearchHit,
+  type VersionOption,
+} from '../types';
 import { ApiError, fetchJson, type RequestOptions } from './http';
 import { MINECRAFT_GAME_ID, MODS_CLASS_ID, getCurseForgeAccess } from './curseforgeConfig';
 import {
@@ -21,9 +31,14 @@ interface CfMod {
   slug: string;
   summary: string;
   downloadCount: number;
-  links?: { websiteUrl?: string | null };
+  links?: { websiteUrl?: string | null; wikiUrl?: string | null; issuesUrl?: string | null; sourceUrl?: string | null };
   logo?: { thumbnailUrl?: string | null; url?: string | null } | null;
   authors?: { name: string }[];
+  categories?: { name: string }[];
+  screenshots?: { title?: string | null; url: string }[];
+  dateModified?: string;
+  thumbsUpCount?: number;
+  latestFilesIndexes?: { gameVersion: string; modLoader?: number | null }[];
 }
 
 /** 1 = Release, 2 = Beta, 3 = Alpha */
@@ -72,14 +87,29 @@ interface CfFingerprintMatch {
 export const MOD_LOADER_TYPE: Record<Loader, number> = {
   forge: 1,
   fabric: 4,
+  quilt: 5,
   neoforge: 6,
 };
+
+const LOADER_BY_TYPE: Record<number, string> = { 1: 'forge', 4: 'fabric', 5: 'quilt', 6: 'neoforge' };
 
 /** Loader names as they appear inside a CurseForge file's `gameVersions` array. */
 const LOADER_TAG: Record<Loader, string> = {
   forge: 'Forge',
   fabric: 'Fabric',
+  quilt: 'Quilt',
   neoforge: 'NeoForge',
+};
+
+const CHANNEL: Record<CfReleaseType, ReleaseChannel> = { 1: 'release', 2: 'beta', 3: 'alpha' };
+
+/** CurseForge `ModsSearchSortField` per sort option. */
+const SORT_FIELD: Record<NonNullable<SearchParams['sort']>, string> = {
+  relevance: '2', // Popularity – CurseForge has no relevance sort
+  follows: '2',
+  downloads: '6', // TotalDownloads
+  newest: '11', // ReleasedDate
+  updated: '3', // LastUpdated
 };
 
 /** CurseForge caps `index + pageSize` at 10 000. */
@@ -137,7 +167,10 @@ export function toCurseForgeFileRef(file: CfFile): CurseForgeFileRef {
 }
 
 function fileMatchesProfile(file: CfFile, profile: Profile): boolean {
-  return file.gameVersions.includes(profile.gameVersion) && file.gameVersions.includes(LOADER_TAG[profile.loader]);
+  return (
+    file.gameVersions.includes(profile.gameVersion) &&
+    compatibleLoaders(profile.loader).some((l) => file.gameVersions.includes(LOADER_TAG[l]))
+  );
 }
 
 function isUsable(file: CfFile): boolean {
@@ -161,6 +194,21 @@ function dependencyRefs(file: CfFile, relationType: CfFileDependency['relationTy
     .map((d) => ({ source: 'curseforge' as const, projectId: String(d.modId), pinnedFileId: null }));
 }
 
+const LOADER_TAGS = new Set(Object.values(LOADER_TAG));
+
+export function toCfVersionOption(file: CfFile): VersionOption {
+  return {
+    id: String(file.id),
+    name: file.displayName,
+    channel: CHANNEL[file.releaseType],
+    published: file.fileDate,
+    filename: file.fileName,
+    size: file.fileLength,
+    loaders: file.gameVersions.filter((v) => LOADER_TAGS.has(v)).map((v) => v.toLowerCase()),
+    gameVersions: file.gameVersions.filter((v) => /^\d+\.\d+/.test(v)),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -174,8 +222,9 @@ export async function searchCurseForge(params: SearchParams): Promise<SearchPage
     classId: String(MODS_CLASS_ID),
     searchFilter: params.query.trim(),
     gameVersion: params.gameVersion,
-    modLoaderType: String(MOD_LOADER_TYPE[params.loader]),
-    sortField: '2', // Popularity
+    // Quilt runs Fabric mods and almost all of them are only tagged "Fabric" on CurseForge.
+    modLoaderType: String(MOD_LOADER_TYPE[params.loader === 'quilt' ? 'fabric' : params.loader]),
+    sortField: SORT_FIELD[params.sort ?? 'relevance'],
     sortOrder: 'desc',
     index: String(params.offset),
     pageSize: String(pageSize),
@@ -202,15 +251,46 @@ export async function getCurseForgeProjectInfos(modIds: string[], signal?: Abort
   return data.data.map(toProjectInfo);
 }
 
+export async function getCurseForgeDetails(modId: string, signal?: AbortSignal): Promise<ProjectDetails> {
+  const { data: mod } = await cfFetch<{ data: CfMod }>(`/v1/mods/${encodeURIComponent(modId)}`, { signal });
+  const indexes = mod.latestFilesIndexes ?? [];
+  const links = [
+    { label: 'CurseForge', url: pageUrl(mod) },
+    mod.links?.sourceUrl && { label: 'Source', url: mod.links.sourceUrl },
+    mod.links?.issuesUrl && { label: 'Issues', url: mod.links.issuesUrl },
+    mod.links?.wikiUrl && { label: 'Wiki', url: mod.links.wikiUrl },
+  ].filter((l): l is { label: string; url: string } => Boolean(l));
+
+  return {
+    ...toProjectInfo(mod),
+    downloads: mod.downloadCount,
+    followers: mod.thumbsUpCount ?? null,
+    updated: mod.dateModified ?? null,
+    categories: (mod.categories ?? []).map((c) => c.name),
+    license: null,
+    links,
+    gallery: (mod.screenshots ?? []).slice(0, 6).map((s) => ({ url: s.url, title: s.title ?? null })),
+    loaders: [...new Set(indexes.map((i) => LOADER_BY_TYPE[i.modLoader ?? 0]).filter((l): l is string => Boolean(l)))],
+    gameVersions: [...new Set(indexes.map((i) => i.gameVersion))],
+    side: null,
+  };
+}
+
 export async function listCompatibleCurseForgeFiles(modId: string, profile: Profile, signal?: AbortSignal): Promise<CfFile[]> {
-  const query = new URLSearchParams({
-    gameVersion: profile.gameVersion,
-    modLoaderType: String(MOD_LOADER_TYPE[profile.loader]),
-    pageSize: '50',
-  });
+  const query = new URLSearchParams({ gameVersion: profile.gameVersion, pageSize: '50' });
+  // Quilt profiles accept Fabric files too, so they skip the server-side loader filter.
+  if (profile.loader !== 'quilt') query.set('modLoaderType', String(MOD_LOADER_TYPE[profile.loader]));
   const data = await cfFetch<{ data: CfFile[] }>(`/v1/mods/${encodeURIComponent(modId)}/files?${query}`, { signal });
   // The server-side filter is loose for multi-loader files; double-check locally.
   return data.data.filter((f) => fileMatchesProfile(f, profile));
+}
+
+export async function listCurseForgeVersionOptions(modId: string, profile: Profile, signal?: AbortSignal): Promise<VersionOption[]> {
+  const files = await listCompatibleCurseForgeFiles(modId, profile, signal);
+  return files
+    .filter(isUsable)
+    .sort((a, b) => Date.parse(b.fileDate) - Date.parse(a.fileDate))
+    .map(toCfVersionOption);
 }
 
 export async function getCurseForgeFile(modId: string, fileId: string, signal?: AbortSignal): Promise<CfFile> {
@@ -236,9 +316,7 @@ export async function resolveCurseForgeFile(
     file = pickBestFile(await listCompatibleCurseForgeFiles(modId, profile, signal));
   }
   if (!file) {
-    throw new NoCompatibleVersionError(
-      `No ${LOADER_TAG[profile.loader]} build for Minecraft ${profile.gameVersion} on CurseForge.`,
-    );
+    throw new NoCompatibleVersionError(`No ${loaderName(profile.loader)} build for Minecraft ${profile.gameVersion} on CurseForge.`);
   }
   return {
     versionLabel: file.displayName,

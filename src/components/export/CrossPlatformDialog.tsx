@@ -69,7 +69,7 @@ export function CrossPlatformDialog({ format, onClose, onSwitchFormat, onOmitAnd
       open
       size="lg"
       onClose={onClose}
-      icon={resolvedAll ? <CircleCheck className="size-6 text-emerald-400" /> : <TriangleAlert className="size-6 text-amber-400" />}
+      icon={resolvedAll ? <CircleCheck className="size-6 text-accent-400" /> : <TriangleAlert className="size-6 text-amber-400" />}
       title={resolvedAll ? 'Every mod is now exportable' : `${pluralize(plan.crossPlatform.length, `${sourceName}-only mod`)} can’t go in a ${FORMAT_LABEL[format]}`}
       description={
         resolvedAll
@@ -112,9 +112,9 @@ export function CrossPlatformDialog({ format, onClose, onSwitchFormat, onOmitAnd
         <div className="space-y-4">
           <ul className="max-h-60 space-y-2 overflow-y-auto">
             {plan.crossPlatform.map((mod) => (
-              <li key={mod.key} className="flex items-center gap-3 rounded-lg bg-slate-800/60 p-2">
+              <li key={mod.key} className="flex items-center gap-3 rounded-lg bg-base-800/60 p-2">
                 <ModIcon src={mod.iconUrl} title={mod.title} size="sm" />
-                <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-100">{mod.title}</span>
+                <span className="min-w-0 flex-1 truncate text-sm font-medium text-base-100">{mod.title}</span>
                 <SourceBadge source={mod.source} />
               </li>
             ))}
@@ -126,8 +126,8 @@ export function CrossPlatformDialog({ format, onClose, onSwitchFormat, onOmitAnd
               : `${pluralize(alternativePlan.included.length, 'mod')} would be included, but ${pluralize(alternativePlan.crossPlatform.length, 'other mod')} would then need attention.`}
           </Callout>
 
-          <div className="flex flex-col gap-2 rounded-xl bg-slate-800/40 p-3 sm:flex-row sm:items-center">
-            <p className="flex-1 text-sm text-slate-300">
+          <div className="flex flex-col gap-2 rounded-xl bg-base-800/40 p-3 sm:flex-row sm:items-center">
+            <p className="flex-1 text-sm text-base-300">
               {toCurseForge
                 ? 'Many mods are published on both sites. Check whether CurseForge hosts the byte-identical jar (downloads each jar and compares CurseForge fingerprints).'
                 : 'Many mods are published on both sites. Check Modrinth for byte-identical files by SHA-1.'}
@@ -144,7 +144,7 @@ export function CrossPlatformDialog({ format, onClose, onSwitchFormat, onOmitAnd
             </Button>
           </div>
           {lastSearchFound !== null && (
-            <p className="text-xs text-slate-400" role="status">
+            <p className="text-xs text-base-400" role="status">
               {lastSearchFound === 0 ? 'No identical files were found.' : `Matched ${pluralize(lastSearchFound, 'mod')}.`}
             </p>
           )}

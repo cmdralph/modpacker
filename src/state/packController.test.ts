@@ -120,3 +120,94 @@ describe('packController', () => {
     expect(store.getState().profile.loader).toBe('neoforge');
   });
 });
+
+describe('version pinning and import', () => {
+  it('re-resolves with a pinned version and can unpin again', async () => {
+    const resolve = vi.fn(async (_s: string, id: string, _p: unknown, pinned: string | null) =>
+      resolved({ modrinth: modrinthFile(id, { versionId: pinned ?? 'latest' }) }),
+    );
+    const { store, controller } = setup({ resolve: resolve as PackApi['resolve'] });
+    await controller.addMod(projectInfo('modrinth', 'a'), { explicit: true });
+    expect(store.getState().mods['modrinth:a']!.modrinth!.versionId).toBe('latest');
+
+    await controller.setVersion('modrinth:a', 'old-v');
+    expect(store.getState().mods['modrinth:a']).toMatchObject({ pinnedFileId: 'old-v', modrinth: { versionId: 'old-v' } });
+
+    await controller.setVersion('modrinth:a', null);
+    expect(store.getState().mods['modrinth:a']!.modrinth!.versionId).toBe('latest');
+  });
+
+  it('applies an explicit pin to a mod that was already pulled in as a dependency', async () => {
+    const resolve = vi.fn(async (_s: string, id: string, _p: unknown, pinned: string | null) =>
+      resolved({
+        modrinth: modrinthFile(id, { versionId: pinned ?? 'latest' }),
+        requiredDependencies: id === 'app' ? [{ source: 'modrinth', projectId: 'lib', pinnedFileId: null }] : [],
+      }),
+    );
+    const { store, controller } = setup({ resolve: resolve as PackApi['resolve'] });
+    await controller.addMod(projectInfo('modrinth', 'app'), { explicit: true });
+    await controller.addMod(projectInfo('modrinth', 'lib'), { explicit: true, pinnedFileId: 'lib-v3' });
+    expect(store.getState().mods['modrinth:lib']).toMatchObject({ explicit: true, pinnedFileId: 'lib-v3', modrinth: { versionId: 'lib-v3' } });
+  });
+
+  it('imports a .mrpack: profile, metadata, pinned files and unmatched entries', async () => {
+    const { store, controller } = setup({
+      resolve: vi.fn(async (_s, id, _p, pinned) => resolved({ modrinth: modrinthFile(id, { versionId: pinned ?? 'latest' }) })),
+      modrinthBySha1: vi.fn(async () => new Map([['aa', modrinthFile('sodium', { versionId: 'sodium-v9', sha1: 'aa' })]])),
+    });
+    await controller.addMod(projectInfo('modrinth', 'old'), { explicit: true });
+
+    const summary = await controller.importPack({
+      format: 'modrinth',
+      meta: { name: 'Imported', version: '3.1.0' },
+      profile: { gameVersion: '1.20.1', loader: 'fabric' },
+      loaderVersion: '0.15.11',
+      entries: [
+        { source: 'modrinth', sha1: 'aa', path: 'mods/sodium.jar' },
+        { source: 'modrinth', sha1: 'zz', path: 'mods/private.jar' },
+      ],
+      skipped: [],
+      hasOverrides: true,
+    });
+
+    const state = store.getState();
+    expect(summary).toEqual({ added: 1, unmatched: ['private.jar'], skipped: [], hasOverrides: true });
+    expect(state.profile).toEqual({ gameVersion: '1.20.1', loader: 'fabric' });
+    expect(state.loaderVersion).toBe('0.15.11');
+    expect(state.meta).toMatchObject({ name: 'Imported', version: '3.1.0', author: 'Web Builder' });
+    expect(state.order).toEqual(['modrinth:sodium']);
+    expect(state.mods['modrinth:sodium']).toMatchObject({ pinnedFileId: 'sodium-v9', status: 'ready' });
+  });
+
+  it('leaves the current pack untouched when import lookups fail', async () => {
+    const { store, controller } = setup({
+      resolve: vi.fn(async (_s, id) => resolved({ modrinth: modrinthFile(id) })),
+      projectInfos: vi.fn(async () => {
+        throw new Error('CurseForge is not configured.');
+      }),
+    });
+    store.dispatch({ type: 'addMod', info: projectInfo('modrinth', 'keep'), explicit: true, requiredBy: null, pinnedFileId: null });
+    await expect(
+      controller.importPack({
+        format: 'curseforge',
+        meta: {},
+        profile: { gameVersion: '1.20.1', loader: 'forge' },
+        loaderVersion: null,
+        entries: [{ source: 'curseforge', projectId: '1', fileId: '2' }],
+        skipped: [],
+        hasOverrides: false,
+      }),
+    ).rejects.toThrow(/not configured/);
+    expect(store.getState().order).toEqual(['modrinth:keep']);
+    expect(store.getState().profile.gameVersion).toBe('1.21.1');
+  });
+
+  it('undoes a removal', async () => {
+    const { store, controller } = setup({ resolve: vi.fn(async (_s, id) => resolved({ modrinth: modrinthFile(id) })) });
+    await controller.addMod(projectInfo('modrinth', 'a'), { explicit: true });
+    const undo = controller.removeMods(['modrinth:a']);
+    expect(store.getState().order).toEqual([]);
+    undo();
+    expect(store.getState().mods['modrinth:a']!.status).toBe('ready');
+  });
+});

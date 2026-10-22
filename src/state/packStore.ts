@@ -31,7 +31,12 @@ function loadPack(): PackState {
           ? { ...mod, status: 'error', error: 'Resolution was interrupted. Retry to fetch the file.' }
           : mod;
     }
-    return { ...parsed, mods, order: parsed.order.filter((k) => k in mods) };
+    return {
+      ...parsed,
+      loaderVersion: typeof parsed.loaderVersion === 'string' ? parsed.loaderVersion : null,
+      mods,
+      order: parsed.order.filter((k) => k in mods),
+    };
   } catch {
     return initialPackState();
   }

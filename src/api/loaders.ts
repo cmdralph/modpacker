@@ -5,6 +5,10 @@ interface FabricLoaderEntry {
   loader: { version: string; stable: boolean };
 }
 
+interface QuiltLoaderEntry {
+  version: string;
+}
+
 interface NeoForgeVersions {
   versions: string[];
 }
@@ -44,6 +48,15 @@ async function latestFabric(gameVersion: string, signal?: AbortSignal): Promise<
   return (entries.find((e) => e.loader.stable) ?? entries[0])?.loader.version ?? null;
 }
 
+/** Quilt's meta lists loader builds newest first; skip betas and pre-releases. */
+export function pickQuiltVersion(entries: QuiltLoaderEntry[]): string | null {
+  return (entries.find((e) => !/beta|pre|rc/i.test(e.version)) ?? entries[0])?.version ?? null;
+}
+
+async function latestQuilt(signal?: AbortSignal): Promise<string | null> {
+  return pickQuiltVersion(await fetchJson<QuiltLoaderEntry[]>('https://meta.quiltmc.org/v3/versions/loader', { signal }));
+}
+
 async function latestNeoForge(gameVersion: string, signal?: AbortSignal): Promise<string | null> {
   const data = await fetchJson<NeoForgeVersions>(
     'https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge',
@@ -70,6 +83,8 @@ export async function fetchLatestLoaderVersion(loader: Loader, gameVersion: stri
   switch (loader) {
     case 'fabric':
       return latestFabric(gameVersion, signal);
+    case 'quilt':
+      return latestQuilt(signal);
     case 'neoforge':
       return latestNeoForge(gameVersion, signal);
     case 'forge':

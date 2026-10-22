@@ -4,22 +4,55 @@ A simple web app that lets you pick mods from **Modrinth** and **CurseForge** an
 
 ## Features
 
-- **Global profile**: pick a Minecraft version (the list comes live from Modrinth) and a loader (Fabric, Forge, NeoForge). When you change the profile on a non-empty pack, you choose to **re-validate** every mod against the new profile or **clear** the pack.
-- **Federated search**: one search bar with an `All / Modrinth / CurseForge` filter. Results show icon, title, description, author, download count and a source badge (green for Modrinth, orange for CurseForge). An empty query shows popular mods. Results are debounced, paginated and cancelled when you type again.
+### Building a pack
+- **Global profile**: pick a Minecraft version (fetched live from Modrinth) and a loader: **Fabric, Quilt, Forge or NeoForge**.
+  - Quilt profiles also accept Fabric mods, because Quilt runs them.
+  - When you change the profile on a non-empty pack, you choose to **re-validate** every mod against the new profile or **clear** the pack.
+- **Federated search**: one search bar across Modrinth and CurseForge, with an `All / Modrinth / CurseForge` filter.
+  - **Sorting:** relevance, downloads, popularity, newest, recently updated.
+  - **Views:** grid or list.
+  - **Infinite scroll:** more results load as you scroll.
+  - **Hide added mods:** a toggle hides mods already in your pack, including the same mod hosted on the other platform.
+  - Press **`/`** to jump to the search box.
+- **Mod details view**: click any mod to see:
+  - downloads, followers, last update, license, and whether it's needed on the client and/or server
+  - categories, screenshots and links
+  - a **compatibility list** of every loader and Minecraft version it supports
+  - every **compatible file** for your profile, so you can **pin an exact version** instead of the latest
 - **Smart workspace**:
-  - **Add to Pack** fetches the newest compatible file for the profile. Stable releases are preferred over betas and alphas.
-  - It stores the metadata the compilers need: filename, SHA-1, SHA-512, download URL and size for Modrinth; numeric project ID and file ID for CurseForge.
-  - **Required dependencies are added automatically**, recursively, and pinned versions are honoured. When you remove a mod, dependencies nothing else needs are removed too.
-  - Warns about mods that declare each other **incompatible**, and about the **same jar added from both platforms**.
-  - The pack is saved in `localStorage`, so a reload keeps your work.
+  - Fetches the newest compatible file (stable releases first) and adds **required dependencies** recursively.
+  - Removing a mod also removes dependencies nothing else needs. Every removal can be **undone**.
+  - Search, filter (mine / dependencies / issues) and sort the pack.
+  - Tags show pinned, client-only and server-only mods, dependencies, and mods also hosted on the other platform.
+  - Warns about mods declared **incompatible** with each other and about the **same jar added twice**.
+  - **Copy the mod list** as Markdown.
+- **Import**: open an existing `.mrpack` or CurseForge `.zip`. It restores the profile, loader version and pack info, and pins every mod to the exact file the pack used.
+
+### Exporting
+- **CurseForge `.zip`**: root `manifest.json` (`manifestType: minecraftModpack`, `manifestVersion: 1`, `projectID`/`fileID` entries), `modlist.html` and an empty `overrides/` folder.
+- **Modrinth `.mrpack`**: root `modrinth.index.json` (format version 1, with hashes, `env`, `downloads` and `fileSize`) and an empty `overrides/` folder.
 - **Cross-platform bridging**:
-  - CurseForge files are looked up on Modrinth by SHA-1. If the identical jar exists there, the mod can go into a `.mrpack` too.
-  - Modrinth jars can be matched on CurseForge with its murmur2 fingerprint, so they can go into a CurseForge `.zip`.
-- **Export engine**:
-  - **CurseForge `.zip`**: root `manifest.json` (`manifestType: minecraftModpack`, `manifestVersion: 1`, `projectID`/`fileID` entries), `modlist.html` and an empty `overrides/` folder.
-  - **Modrinth `.mrpack`**: root `modrinth.index.json` (format version 1, with hashes, `env`, `downloads` and `fileSize`) and an empty `overrides/` folder.
-- **Cross-platform warning**: if you export a CurseForge `.zip` with Modrinth-only mods (or a `.mrpack` with CurseForge-only mods), a dialog explains why those mods can't be referenced. You can then **switch format**, **find identical files** on the other platform, or **omit** those mods and export anyway.
-- **Resilient networking**: request timeouts, a "slow API" notice, separate error banners for each source with retry, rate-limit (429) messages, skeleton loaders and empty states.
+  - CurseForge files are looked up on Modrinth by SHA-1.
+  - Modrinth jars can be matched on CurseForge with its murmur2 fingerprint.
+  - A mod published on both platforms can go into either format.
+- **Cross-platform warning**: if some mods can't be referenced by the chosen format, a dialog explains why. You can then **switch format**, **find identical files** on the other platform, or **omit** those mods.
+
+### Customisation
+Everything is in **Settings** and saved in your browser:
+- **Themes:** Dark, Midnight (OLED), Nether (warm) and Light, or follow the system setting.
+- **Accent colours:** 8 to choose from.
+- **Text size:** 90–120 %.
+- **Density:** comfortable or compact.
+- **Results:** grid or list.
+- **Pack sidebar:** on the left or the right.
+- **Toggles:** infinite scroll, hide added mods, and descriptions.
+
+On phones, the pack and export panels open as a bottom sheet.
+
+### Robust by default
+- **Network:** request timeouts, a "slow API" notice, a separate error banner for each source with retry, and rate-limit messages.
+- **Loading and empty states:** skeleton loaders and empty states.
+- **Accessibility:** keyboard-friendly dialogs with focus trapping, and support for reduced motion.
 
 ## Getting started
 
@@ -59,6 +92,7 @@ Without CurseForge access, the app works in Modrinth-only mode and shows a "Conf
 Both formats need a concrete loader build: `fabric-0.16.14` in a CurseForge manifest, `"fabric-loader": "0.16.14"` in a Modrinth index. Launchers reject a bare `"latest"`. The export panel looks up the newest build automatically:
 
 - Fabric: `meta.fabricmc.net`
+- Quilt: `meta.quiltmc.org`
 - NeoForge: `maven.neoforged.net`
 - Forge: `promotions_slim.json`
 
@@ -68,11 +102,13 @@ The field stays editable. If a metadata host blocks the request (some do not sen
 
 ```
 src/
-  api/          http client, Modrinth & CurseForge clients, loader-version lookup
-  state/        external store, pack reducer + selectors, async pack controller, settings
+  api/          http client, Modrinth & CurseForge clients, project details, loader-version lookup
+  state/        external store, pack reducer + selectors, async pack controller, preferences, settings, UI state
+  import/       .mrpack / CurseForge .zip parser
   export/       manifest builders, export planner (cross-platform analysis), JSZip packager
   hooks/        federated search, debounce, remote data (game versions, loader versions)
-  components/   profile bar, search grid, workspace, export panel, dialogs, UI primitives
+  components/   profile bar, search, mod details, workspace, export, import, settings, UI primitives
+  styles/       generated theme + accent palettes (npm run theme)
   lib/          murmur2 fingerprinting, formatting, concurrency helper
 proxy/          optional CurseForge proxy (Cloudflare Worker)
 ```

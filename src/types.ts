@@ -1,13 +1,26 @@
 export type ModSource = 'modrinth' | 'curseforge';
 export type SourceFilter = 'all' | ModSource;
-export type Loader = 'fabric' | 'forge' | 'neoforge';
+export type Loader = 'fabric' | 'quilt' | 'forge' | 'neoforge';
 export type ExportFormat = 'curseforge' | 'modrinth';
 
-export const LOADERS: readonly { id: Loader; label: string }[] = [
-  { id: 'fabric', label: 'Fabric' },
-  { id: 'forge', label: 'Forge' },
-  { id: 'neoforge', label: 'NeoForge' },
+export const LOADERS: readonly { id: Loader; label: string; hint: string }[] = [
+  { id: 'fabric', label: 'Fabric', hint: 'Lightweight, fast-updating loader' },
+  { id: 'quilt', label: 'Quilt', hint: 'Fabric fork – also runs most Fabric mods' },
+  { id: 'forge', label: 'Forge', hint: 'The classic loader, strongest on older versions' },
+  { id: 'neoforge', label: 'NeoForge', hint: 'Community fork of Forge for 1.20.2+' },
 ];
+
+export function loaderName(loader: Loader): string {
+  return LOADERS.find((l) => l.id === loader)?.label ?? loader;
+}
+
+/**
+ * Loaders whose mods run under the selected loader. Quilt loads Fabric mods, so a Quilt
+ * pack can use files built for either.
+ */
+export function compatibleLoaders(loader: Loader): Loader[] {
+  return loader === 'quilt' ? ['quilt', 'fabric'] : [loader];
+}
 
 export interface Profile {
   gameVersion: string;
@@ -89,4 +102,44 @@ export interface PackMeta {
   name: string;
   version: string;
   author: string;
+}
+
+export type ReleaseChannel = 'release' | 'beta' | 'alpha';
+
+/** One downloadable file/version of a project, used by the details view's version picker. */
+export interface VersionOption {
+  /** Modrinth version id or CurseForge file id. */
+  id: string;
+  name: string;
+  channel: ReleaseChannel;
+  published: string;
+  filename: string;
+  size: number;
+  loaders: string[];
+  gameVersions: string[];
+}
+
+export type SideSupport = 'required' | 'optional' | 'unsupported' | 'unknown';
+
+/** Rich project metadata for the details view. */
+export interface ProjectDetails {
+  source: ModSource;
+  projectId: string;
+  slug: string;
+  title: string;
+  description: string;
+  author: string;
+  iconUrl: string | null;
+  pageUrl: string;
+  downloads: number;
+  followers: number | null;
+  updated: string | null;
+  categories: string[];
+  license: string | null;
+  links: { label: string; url: string }[];
+  gallery: { url: string; title: string | null }[];
+  /** Every loader and Minecraft version the project has ever published files for. */
+  loaders: string[];
+  gameVersions: string[];
+  side: { client: SideSupport; server: SideSupport } | null;
 }

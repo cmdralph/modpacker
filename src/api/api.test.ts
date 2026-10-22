@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { settingsStore } from '../state/settings';
 import { NoCompatibleVersionError } from './common';
 import { getCurseForgeAccess } from './curseforgeConfig';
-import { pickBestFile, resolveCurseForgeFile, searchCurseForge, type CfFile } from './curseforge';
+import { listCurseForgeVersionOptions, pickBestFile, resolveCurseForgeFile, searchCurseForge, type CfFile } from './curseforge';
 import { ApiError } from './http';
-import { neoForgePrefix, pickNeoForgeVersion } from './loaders';
+import { neoForgePrefix, pickNeoForgeVersion, pickQuiltVersion } from './loaders';
+import { compareGameVersionsDesc, releaseVersions } from './projects';
 import { pickBestVersion, resolveModrinthFile, searchModrinth, type MrVersion } from './modrinth';
 
 const fetchMock = vi.fn<typeof fetch>();
@@ -200,5 +201,72 @@ describe('loader versions', () => {
     const versions = ['21.0.167', '21.1.1-beta', '21.1.65', '21.1.77', '21.1.80-beta', '21.10.1'];
     expect(pickNeoForgeVersion(versions, '1.21.1')).toBe('21.1.77');
     expect(pickNeoForgeVersion(['21.1.1-beta'], '1.21.1')).toBe('21.1.1-beta');
+  });
+});
+
+describe('Quilt and sorting', () => {
+  it('searches Modrinth for Quilt or Fabric mods with the chosen sort', async () => {
+    fetchMock.mockImplementation(async () => json({ total_hits: 0, hits: [] }));
+    await searchModrinth({ query: 'menu', gameVersion: '1.21.1', loader: 'quilt', offset: 0, limit: 20, sort: 'updated' });
+    const url = new URL(String(fetchMock.mock.calls[0]![0]));
+    expect(JSON.parse(url.searchParams.get('facets')!)[0]).toEqual(['categories:quilt', 'categories:fabric']);
+    expect(url.searchParams.get('index')).toBe('updated');
+
+    await searchModrinth({ query: '', gameVersion: '1.21.1', loader: 'forge', offset: 0, limit: 20, sort: 'relevance' });
+    expect(new URL(String(fetchMock.mock.calls[1]![0])).searchParams.get('index')).toBe('downloads');
+  });
+
+  it('accepts Fabric files for a Quilt profile on Modrinth', async () => {
+    fetchMock
+      .mockResolvedValueOnce(json({ id: 'P', slug: 'p', title: 'P', description: '', icon_url: null, team: 't', client_side: 'required', server_side: 'required' }))
+      .mockResolvedValueOnce(json([mrVersion('fab', 'release')]));
+    const result = await resolveModrinthFile('P', { gameVersion: '1.21.1', loader: 'quilt' }, null);
+    expect(JSON.parse(new URL(String(fetchMock.mock.calls[1]![0])).searchParams.get('loaders')!)).toEqual(['quilt', 'fabric']);
+    expect(result.modrinth!.versionId).toBe('fab');
+  });
+
+  it('maps sort options and Quilt for CurseForge', async () => {
+    settingsStore.dispatch({ curseforgeApiKey: 'k' });
+    fetchMock.mockImplementation(async () => json({ data: [], pagination: { index: 0, pageSize: 20, resultCount: 0, totalCount: 0 } }));
+    await searchCurseForge({ query: '', gameVersion: '1.21.1', loader: 'quilt', offset: 0, limit: 20, sort: 'newest' });
+    const params = new URL(String(fetchMock.mock.calls[0]![0])).searchParams;
+    expect(params.get('modLoaderType')).toBe('4');
+    expect(params.get('sortField')).toBe('11');
+  });
+
+  it('lists CurseForge files for Quilt without a loader filter and keeps Fabric/Quilt files', async () => {
+    settingsStore.dispatch({ curseforgeApiKey: 'k' });
+    fetchMock.mockResolvedValueOnce(
+      json({
+        data: [
+          cfFile(1, 1, '2024-01-01T00:00:00Z', { gameVersions: ['1.21.1', 'Fabric'] }),
+          cfFile(2, 1, '2024-02-01T00:00:00Z', { gameVersions: ['1.21.1', 'Quilt'] }),
+          cfFile(3, 1, '2024-03-01T00:00:00Z', { gameVersions: ['1.21.1', 'Forge'] }),
+        ],
+      }),
+    );
+    const options = await listCurseForgeVersionOptions('99', { gameVersion: '1.21.1', loader: 'quilt' });
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).searchParams.has('modLoaderType')).toBe(false);
+    expect(options.map((o) => [o.id, o.loaders])).toEqual([
+      ['2', ['quilt']],
+      ['1', ['fabric']],
+    ]);
+  });
+
+  it('picks the newest stable Quilt loader', () => {
+    expect(pickQuiltVersion([{ version: '0.29.2-beta.1' }, { version: '0.29.1' }, { version: '0.28.0' }])).toBe('0.29.1');
+  });
+});
+
+describe('game version ordering', () => {
+  it('sorts numerically, newest first, and drops snapshots', () => {
+    expect(releaseVersions(['1.20.1', '1.21.10', '1.21.9', '24w14a', '1.21', '26.1', '1.21-pre1', '1.21.9'])).toEqual([
+      '26.1',
+      '1.21.10',
+      '1.21.9',
+      '1.21',
+      '1.20.1',
+    ]);
+    expect(compareGameVersionsDesc('1.21', '1.21.1')).toBeGreaterThan(0);
   });
 });
