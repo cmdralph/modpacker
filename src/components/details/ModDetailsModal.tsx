@@ -16,16 +16,17 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import type { ProjectInfo } from '../../api/common';
 import { modKey } from '../../api/common';
 import { errorMessage, isAbortError } from '../../api/http';
 import { getProjectDetails, listVersionOptions, releaseVersions } from '../../api/projects';
 import { formatBytes, formatCount, formatDate } from '../../lib/format';
 import { packController } from '../../state/controller';
-import { packCoverage } from '../../state/pack';
+import { orderedMods, packCoverage } from '../../state/pack';
 import { packStore } from '../../state/packStore';
 import { useStore } from '../../state/store';
 import { ui, uiStore } from '../../state/ui';
-import { compatibleLoaders, loaderName, type Loader, type ProjectDetails, type SideSupport, type VersionOption } from '../../types';
+import { compatibleLoaders, loaderName, type Loader, type PackMod, type ProjectDetails, type SideSupport, type VersionOption } from '../../types';
 import { Modal } from '../ui/Modal';
 import { Button, Callout, Chip, ModIcon, Segmented, SourceBadge, Spinner, cx } from '../ui/primitives';
 import { toast } from '../ui/Toasts';
@@ -120,33 +121,46 @@ function VersionRow({
 
 export function ModDetailsModal() {
   const target = useStore(uiStore, (s) => s.details);
+  const profile = useStore(packStore, (s) => s.profile);
+  const [attempt, setAttempt] = useState(0);
+  if (!target) return null;
+  // Remounting per project/profile/attempt gives every load a clean "loading" state.
+  const key = `${modKey(target.source, target.projectId)}|${profile.loader}|${profile.gameVersion}|${attempt}`;
+  return <ModDetails key={key} target={target} onRetry={() => setAttempt((n) => n + 1)} />;
+}
+
+async function load<T>(promise: Promise<T>, set: (value: Load<T>) => void) {
+  try {
+    set({ status: 'ready', data: await promise });
+  } catch (error) {
+    if (!isAbortError(error)) set({ status: 'error', error: errorMessage(error) });
+  }
+}
+
+function ModDetails({ target, onRetry }: { target: ProjectInfo; onRetry: () => void }) {
   const pack = useStore(packStore, (s) => s);
   const { profile } = pack;
   const [details, setDetails] = useState<Load<ProjectDetails>>({ status: 'loading' });
   const [versions, setVersions] = useState<Load<VersionOption[]>>({ status: 'loading' });
   const [channel, setChannel] = useState<ChannelFilter>('all');
-  const [attempt, setAttempt] = useState(0);
 
-  const key = target ? modKey(target.source, target.projectId) : null;
+  const key = modKey(target.source, target.projectId);
   const coverage = useMemo(() => packCoverage(pack), [pack]);
-  const packMod = key ? coverage.get(key) ?? null : null;
+  const packMod = coverage.get(key) ?? null;
   const nativeInPack = packMod?.key === key ? packMod : null;
+  const requires = nativeInPack ? orderedMods(pack).filter((m) => m.requiredBy.includes(nativeInPack.key)) : [];
+  const requiredBy = nativeInPack ? nativeInPack.requiredBy.map((k) => pack.mods[k]).filter((m): m is PackMod => Boolean(m)) : [];
 
+  // Fetch once per mount; the parent remounts this component when the project or profile changes.
+  const source = target.source;
+  const projectId = target.projectId;
+  const [initialProfile] = useState(profile);
   useEffect(() => {
-    if (!target) return;
     const controller = new AbortController();
-    setDetails({ status: 'loading' });
-    setVersions({ status: 'loading' });
-    getProjectDetails(target.source, target.projectId, controller.signal)
-      .then((data) => setDetails({ status: 'ready', data }))
-      .catch((error: unknown) => !isAbortError(error) && setDetails({ status: 'error', error: errorMessage(error) }));
-    listVersionOptions(target.source, target.projectId, profile, controller.signal)
-      .then((data) => setVersions({ status: 'ready', data }))
-      .catch((error: unknown) => !isAbortError(error) && setVersions({ status: 'error', error: errorMessage(error) }));
+    void load(getProjectDetails(source, projectId, controller.signal), setDetails);
+    void load(listVersionOptions(source, projectId, initialProfile, controller.signal), setVersions);
     return () => controller.abort();
-  }, [target, profile, attempt]);
-
-  if (!target || !key) return null;
+  }, [source, projectId, initialProfile]);
 
   const info = details.status === 'ready' ? details.data : null;
   const currentFileId = nativeInPack
@@ -160,13 +174,13 @@ export function ModDetailsModal() {
   const busy = nativeInPack?.status === 'resolving';
   const versionList = versions.status === 'ready' ? versions.data.filter((v) => channel === 'all' || v.channel === 'release') : [];
 
-  async function useVersion(option: VersionOption) {
+  async function pinVersion(option: VersionOption) {
     if (nativeInPack) {
       await packController.setVersion(nativeInPack.key, option.id);
-      toast('success', `${target!.title} pinned to ${option.name}.`);
+      toast('success', `Done – ${target.title} is pinned to ${option.name}.`);
     } else {
-      void packController.addMod(target!, { explicit: true, pinnedFileId: option.id });
-      toast('success', `Added ${target!.title} (${option.name}).`);
+      void packController.addMod(target, { explicit: true, pinnedFileId: option.id });
+      toast('success', `Added ${target.title} (${option.name}).`);
     }
   }
 
@@ -215,6 +229,21 @@ export function ModDetailsModal() {
       <div className="space-y-6">
         <p className="text-sm leading-relaxed text-base-300">{info?.description ?? target.description}</p>
 
+        {(requires.length > 0 || requiredBy.length > 0) && (
+          <div className="space-y-1.5 text-sm">
+            {requiredBy.length > 0 && (
+              <p className="text-base-400">
+                <span className="font-semibold text-base-200">Needed by</span> {requiredBy.map((m) => m.title).join(', ')}
+              </p>
+            )}
+            {requires.length > 0 && (
+              <p className="text-base-400">
+                <span className="font-semibold text-base-200">Pulls in</span> {requires.map((m) => m.title).join(', ')}
+              </p>
+            )}
+          </div>
+        )}
+
         {packMod && packMod.key !== key && (
           <Callout tone="info" icon={<Check className="size-4" />}>
             Already in your pack via {packMod.source === 'modrinth' ? 'Modrinth' : 'CurseForge'} – the identical file is used.
@@ -231,7 +260,7 @@ export function ModDetailsModal() {
             tone="error"
             icon={<CircleAlert className="size-4" />}
             title="Couldn’t load details"
-            action={<Button size="sm" icon={<RefreshCw className="size-3.5" />} onClick={() => setAttempt((n) => n + 1)}>Retry</Button>}
+            action={<Button size="sm" icon={<RefreshCw className="size-3.5" />} onClick={onRetry}>Retry</Button>}
           >
             {details.error}
           </Callout>
@@ -325,7 +354,7 @@ export function ModDetailsModal() {
                   option={option}
                   busy={busy}
                   state={option.id === currentFileId ? (pinned === option.id ? 'pinned' : 'current') : 'available'}
-                  onUse={() => void useVersion(option)}
+                  onUse={() => void pinVersion(option)}
                 />
               ))}
             </ul>

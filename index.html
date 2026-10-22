@@ -7,21 +7,7 @@
     <meta name="theme-color" content="#020617" />
     <meta name="description" content="Build Minecraft modpacks from Modrinth and CurseForge mods and export them as .mrpack or CurseForge .zip, entirely in your browser." />
     <title>Modpacker</title>
-    <script>
-      // Apply the saved theme before first paint to avoid a flash of the default theme.
-      (function () {
-        try {
-          var p = JSON.parse(localStorage.getItem('modpacker:preferences:v1') || '{}');
-          var root = document.documentElement;
-          var theme = p.theme || 'dark';
-          if (theme === 'system') theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-          if (/^(dark|midnight|nether|light)$/.test(theme)) root.dataset.theme = theme;
-          if (/^[a-z]+$/.test(p.accent || '')) root.dataset.accent = p.accent;
-          if ([90, 100, 110, 120].indexOf(p.fontScale) >= 0) root.style.fontSize = p.fontScale + '%';
-          root.classList.toggle('dark', theme !== 'light');
-        } catch (e) {}
-      })();
-    </script>
+    <script src="./theme-init.js"></script>
   </head>
   <body class="antialiased">
     <div id="root"></div>

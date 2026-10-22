@@ -26,7 +26,7 @@ A simple web app that lets you pick mods from **Modrinth** and **CurseForge** an
   - Tags show pinned, client-only and server-only mods, dependencies, and mods also hosted on the other platform.
   - Warns about mods declared **incompatible** with each other and about the **same jar added twice**.
   - **Copy the mod list** as Markdown.
-- **Import**: open an existing `.mrpack` or CurseForge `.zip`. It restores the profile, loader version and pack info, and pins every mod to the exact file the pack used.
+- **Import**: open an existing `.mrpack` or CurseForge `.zip` as a new pack. It restores the profile, loader version, pack info and bundled files, and pins every mod to the exact file the pack used.
 
 ### Exporting
 - **CurseForge `.zip`**: root `manifest.json` (`manifestType: minecraftModpack`, `manifestVersion: 1`, `projectID`/`fileID` entries), `modlist.html` and an empty `overrides/` folder.
@@ -37,8 +37,21 @@ A simple web app that lets you pick mods from **Modrinth** and **CurseForge** an
   - A mod published on both platforms can go into either format.
 - **Cross-platform warning**: if some mods can't be referenced by the chosen format, a dialog explains why. You can then **switch format**, **find identical files** on the other platform, or **omit** those mods.
 
+### Your packs
+- **Pack library:** keep as many packs as you like and switch between them from the header (or press **P**). You can create, duplicate and delete packs. Everything autosaves in your browser, and older single-pack saves are migrated automatically.
+- **Starter kits:** one-click Performance, Quality-of-life, Visuals and Exploration sets. Mods without a build for your version and loader are skipped automatically.
+- **Share links:** copy a link that rebuilds an exact copy of your pack, with every mod pinned to the same file.
+  - The pack is compressed into the URL fragment (the part after `#`), so nothing is uploaded anywhere.
+  - Incoming links are strictly validated.
+- **Extra files:** bundle configs, resource packs, shader packs, KubeJS scripts and other files into the pack's `overrides/` folder.
+  - Files are saved per pack in IndexedDB.
+  - Imported packs keep their bundled files.
+  - `client-` and `server-overrides` are preserved in `.mrpack` exports.
+- **Check for updates:** re-resolves every mod that isn't pinned and tells you what changed.
+- **Pack description:** written into the `.mrpack` summary, which launchers display.
+
 ### Customisation
-Everything is in **Settings** and saved in your browser:
+Everything is in **Settings** (or press **,**) and saved in your browser:
 - **Themes:** Dark, Midnight (OLED), Nether (warm) and Light, or follow the system setting.
 - **Accent colours:** 8 to choose from.
 - **Text size:** 90–120 %.
@@ -47,12 +60,50 @@ Everything is in **Settings** and saved in your browser:
 - **Pack sidebar:** on the left or the right.
 - **Toggles:** infinite scroll, hide added mods, and descriptions.
 
+Search results can also be filtered to mods that work on clients or on servers (Modrinth metadata).
+
 On phones, the pack and export panels open as a bottom sheet.
+
+### Keyboard shortcuts
+| Key | Action |
+| --- | --- |
+| `/` | Jump to search |
+| `G` | Grid ↔ list results |
+| `H` | Hide or show mods already in the pack |
+| `P` | Your packs |
+| `,` | Settings |
+| `?` | All shortcuts |
+| `Esc` | Clear the search, close a dialog |
 
 ### Robust by default
 - **Network:** request timeouts, a "slow API" notice, a separate error banner for each source with retry, and rate-limit messages.
-- **Loading and empty states:** skeleton loaders and empty states.
-- **Accessibility:** keyboard-friendly dialogs with focus trapping, and support for reduced motion.
+- **Search results:** late responses from an earlier query can never overwrite newer results.
+- **Accessibility:**
+  - Native `<dialog>` elements handle focus containment, top-layer stacking and Escape.
+  - Toasts stay clickable while a dialog is open.
+  - Segmented controls are real radio buttons, so arrow keys work.
+  - Reduced-motion support.
+- **Crash recovery:** an error screen offers a one-click backup of every saved pack.
+
+## Security & privacy
+- **No backend and no tracking.** Packs, settings and bundled files never leave your browser, except for the API requests needed to look mods up.
+- **Content-Security-Policy (production build):**
+  - No inline or third-party scripts, and no plugins or forms.
+  - Network access only over HTTPS, plus localhost for a local proxy.
+  - Referrers are not sent.
+- **Untrusted input is validated:** share links, imported `.mrpack` / `.zip` files and saved state are all checked.
+  - Archive paths are sanitised against zip-slip (`..`, absolute paths, drive letters, characters Windows forbids).
+  - Hashes and IDs are pattern-checked.
+  - Payloads are size-capped.
+- **No dangerous patterns:** no `eval`, no `innerHTML`, no `dangerouslySetInnerHTML`. Generated HTML (`modlist.html`) is escaped.
+- **CurseForge key:** see [CurseForge access](#curseforge-access). Never ship a key in a public build.
+
+## Quality checks
+- **`npm run check`** runs the type checker (strict mode, `noUncheckedIndexedAccess`), [oxlint](https://oxc.rs) and the unit tests (Vitest).
+  - oxlint enforces the React Hooks, accessibility (jsx-a11y), TypeScript and promise rules.
+- **CI** runs all of these, plus a production build, on every push and pull request.
+- **Runtime dependencies:** `react`, `react-dom`, `jszip` and `lucide-react` (icons are tree-shaken).
+  - JSZip is lazy-loaded, so only the export and import flows pay for it.
 
 ## Getting started
 
@@ -60,6 +111,8 @@ On phones, the pack and export panels open as a bottom sheet.
 npm install
 npm run dev        # http://localhost:5173
 npm test           # unit tests (Vitest)
+npm run lint       # oxlint (hooks, a11y, TypeScript rules)
+npm run check      # typecheck + lint + tests
 npm run build      # type-check + production build into dist/
 ```
 
@@ -104,12 +157,14 @@ The field stays editable. If a metadata host blocks the request (some do not sen
 src/
   api/          http client, Modrinth & CurseForge clients, project details, loader-version lookup
   state/        external store, pack reducer + selectors, async pack controller, preferences, settings, UI state
-  import/       .mrpack / CurseForge .zip parser
+  import/       .mrpack / CurseForge .zip parser (with bundled files)
+  share/        share-link encoder/decoder
+  data/         starter kits
   export/       manifest builders, export planner (cross-platform analysis), JSZip packager
   hooks/        federated search, debounce, remote data (game versions, loader versions)
   components/   profile bar, search, mod details, workspace, export, import, settings, UI primitives
   styles/       generated theme + accent palettes (npm run theme)
-  lib/          murmur2 fingerprinting, formatting, concurrency helper
+  lib/          murmur2 fingerprinting, path sanitising, IndexedDB, lazy JSZip, formatting
 proxy/          optional CurseForge proxy (Cloudflare Worker)
 ```
 

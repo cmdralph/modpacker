@@ -47,7 +47,7 @@ export const DEFAULT_PROFILE: Profile = { gameVersion: '1.21.1', loader: 'fabric
 
 export function initialPackState(): PackState {
   return {
-    meta: { name: 'My Modpack', version: '1.0.0', author: 'Web Builder' },
+    meta: { name: 'My Modpack', version: '1.0.0', author: 'Web Builder', description: '' },
     profile: DEFAULT_PROFILE,
     loaderVersion: null,
     mods: {},

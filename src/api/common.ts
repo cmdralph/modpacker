@@ -1,4 +1,4 @@
-import type { SearchSort } from '../state/preferences';
+import type { Environment, SearchSort } from '../state/preferences';
 import type { CurseForgeFileRef, Loader, ModSource, ModrinthFileRef, SearchHit } from '../types';
 
 export interface SearchPage {
@@ -13,6 +13,8 @@ export interface SearchParams {
   offset: number;
   limit: number;
   sort?: SearchSort;
+  /** Modrinth only: require client- or server-side support. */
+  environment?: Environment;
   signal?: AbortSignal;
 }
 

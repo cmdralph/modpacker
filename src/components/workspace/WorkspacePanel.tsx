@@ -11,6 +11,7 @@ import {
   Pin,
   RefreshCw,
   Search,
+  Sparkles,
   Server,
   SlidersHorizontal,
   Trash2,
@@ -60,11 +61,11 @@ const PackModRow = memo(function PackModRow({ mod, parents, compact }: { mod: Pa
     >
       <ModIcon src={mod.iconUrl} title={mod.title} size={compact ? 'xs' : 'sm'} />
       <div className="min-w-0 flex-1 space-y-1">
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 items-center gap-2">
           <button
             type="button"
             onClick={() => ui.openDetails(mod)}
-            className="truncate rounded text-left text-sm font-semibold text-base-50 hover:text-accent-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400"
+            className="min-w-0 truncate rounded text-left text-sm font-semibold text-base-50 hover:text-accent-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400"
             title="Show details and versions"
           >
             {mod.title}
@@ -85,7 +86,7 @@ const PackModRow = memo(function PackModRow({ mod, parents, compact }: { mod: Pa
         {(mod.status === 'incompatible' || mod.status === 'error') && (
           <p className={cx('flex items-start gap-1.5 text-xs', mod.status === 'error' ? 'text-rose-300' : 'text-amber-200')}>
             {mod.status === 'error' ? <CircleAlert className="mt-px size-3 shrink-0" /> : <Ban className="mt-px size-3 shrink-0" />}
-            <span>{mod.error}</span>
+            <span className="[overflow-wrap:anywhere]">{mod.error}</span>
           </p>
         )}
 
@@ -150,6 +151,7 @@ export function WorkspacePanel({ className }: { className?: string }) {
   const [filter, setFilter] = useState('');
   const [view, setView] = useState<View>('all');
   const [sort, setSort] = useState<Sort>('added');
+  const [checking, setChecking] = useState(false);
 
   const mods = useMemo(() => orderedMods(state), [state]);
   const conflicts = useMemo(() => findConflicts(state), [state]);
@@ -169,10 +171,29 @@ export function WorkspacePanel({ className }: { className?: string }) {
       if (view === 'problems' && m.status !== 'incompatible' && m.status !== 'error') return false;
       return !needle || m.title.toLowerCase().includes(needle) || m.author.toLowerCase().includes(needle);
     });
-    if (sort === 'name') return [...list].sort((a, b) => a.title.localeCompare(b.title));
-    if (sort === 'size') return [...list].sort((a, b) => modSize(b) - modSize(a));
+    if (sort === 'name') return [...list].toSorted((a, b) => a.title.localeCompare(b.title));
+    if (sort === 'size') return [...list].toSorted((a, b) => modSize(b) - modSize(a));
     return list;
   }, [mods, filter, view, sort]);
+
+  async function checkForUpdates() {
+    setChecking(true);
+    try {
+      const { updated, failed } = await packController.refreshAll();
+      if (updated.length === 0 && failed.length === 0) toast('success', 'Everything’s already up to date ✨');
+      else {
+        const list = updated.slice(0, 3).map((u) => `${u.title} → ${u.to}`).join(', ');
+        toast(
+          failed.length > 0 ? 'warning' : 'success',
+          (updated.length > 0 ? `Updated ${pluralize(updated.length, 'mod')}: ${list}${updated.length > 3 ? '…' : ''}.` : 'No newer versions found.') +
+            (failed.length > 0 ? ` ${failed.length} couldn’t be checked.` : ''),
+          { durationMs: 9000 },
+        );
+      }
+    } finally {
+      setChecking(false);
+    }
+  }
 
   async function copyList() {
     const text = toMarkdown(mods, state.meta.name, `${state.profile.loader} ${state.profile.gameVersion}`);
@@ -204,6 +225,9 @@ export function WorkspacePanel({ className }: { className?: string }) {
           </IconButton>
           {mods.length > 0 && (
             <>
+              <IconButton label="Check for newer versions (pinned mods stay put)" onClick={() => void checkForUpdates()} disabled={checking || resolving > 0}>
+                {checking ? <Spinner /> : <Sparkles className="size-4" />}
+              </IconButton>
               <IconButton label="Copy mod list as Markdown" onClick={() => void copyList()}>
                 <ClipboardCopy className="size-4" />
               </IconButton>
@@ -255,8 +279,8 @@ export function WorkspacePanel({ className }: { className?: string }) {
         <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-base-800 px-4 py-10 text-center">
           <Boxes className="size-9 text-base-700" aria-hidden />
           <div>
-            <p className="text-sm font-semibold text-base-300">Your pack is empty</p>
-            <p className="mt-1 text-xs text-base-500">Search for mods and hit “Add”. Required dependencies are added automatically.</p>
+            <p className="text-sm font-semibold text-base-300">Nothing here yet – let’s fix that!</p>
+            <p className="mt-1 text-xs text-base-500">Search for mods and hit “Add”. Anything they need comes along automatically.</p>
           </div>
           <Button size="sm" icon={<FileUp className="size-3.5" />} onClick={ui.openImport}>
             Import an existing pack

@@ -1,12 +1,12 @@
 import JSZip from 'jszip';
 import { describe, expect, it } from 'vitest';
-import { curseForgeFile, modrinthFile, packWith, projectInfo } from '../test/fixtures';
+import { curseForgeFile, fakeSha1, modrinthFile, packWith, projectInfo } from '../test/fixtures';
 import { orderedMods } from '../state/pack';
 import { buildCurseForgeManifest, buildModrinthIndex } from './manifests';
 import { archiveFilename, buildPackArchive } from './packager';
 import { planExport } from './plan';
 
-const meta = { name: 'Test Pack', version: '1.2.3', author: 'Tester' };
+const meta = { name: 'Test Pack', version: '1.2.3', author: 'Tester', description: '' };
 const fabric = { gameVersion: '1.21.1', loader: 'fabric' as const };
 
 describe('buildCurseForgeManifest', () => {
@@ -60,7 +60,7 @@ describe('buildModrinthIndex', () => {
       files: [
         {
           path: 'mods/AANobbMI-1.0.0.jar',
-          hashes: { sha1: 'sha1-AANobbMI', sha512: 'sha512-AANobbMI' },
+          hashes: { sha1: fakeSha1('AANobbMI'), sha512: 'sha512-AANobbMI' },
           env: { client: 'required', server: 'unsupported' },
           downloads: ['https://cdn.modrinth.com/data/AANobbMI/versions/v1/AANobbMI-1.0.0.jar'],
           fileSize: 1024,
@@ -121,21 +121,22 @@ describe('planExport', () => {
   });
 });
 
+async function open(blob: Blob) {
+  return JSZip.loadAsync(await blob.arrayBuffer());
+}
+
 describe('buildPackArchive', () => {
   const state = packWith([
     { info: projectInfo('modrinth', 'sodium', 'Sodium'), modrinth: modrinthFile('sodium'), curseforge: curseForgeFile(394468) },
   ]);
   const mods = orderedMods(state);
 
-  async function open(blob: Blob) {
-    return JSZip.loadAsync(await blob.arrayBuffer());
-  }
 
   it('creates a CurseForge zip with manifest.json and an empty overrides/ folder', async () => {
     const archive = await buildPackArchive({ format: 'curseforge', meta, profile: fabric, loaderVersion: '0.16.5', mods });
     expect(archive.filename).toBe('Test-Pack-1.2.3.zip');
     const zip = await open(archive.blob);
-    expect(Object.keys(zip.files).sort()).toEqual(['manifest.json', 'modlist.html', 'overrides/']);
+    expect(Object.keys(zip.files).toSorted()).toEqual(['manifest.json', 'modlist.html', 'overrides/']);
     expect(zip.files['overrides/']!.dir).toBe(true);
     const manifest = JSON.parse(await zip.file('manifest.json')!.async('string'));
     expect(manifest.files).toEqual([{ projectID: 394468, fileID: 3944680, required: true }]);
@@ -146,14 +147,42 @@ describe('buildPackArchive', () => {
     expect(archive.filename).toBe('Test-Pack-1.2.3.mrpack');
     expect(archive.fileCount).toBe(1);
     const zip = await open(archive.blob);
-    expect(Object.keys(zip.files).sort()).toEqual(['modrinth.index.json', 'overrides/']);
+    expect(Object.keys(zip.files).toSorted()).toEqual(['modrinth.index.json', 'overrides/']);
     const index = JSON.parse(await zip.file('modrinth.index.json')!.async('string'));
     expect(index.formatVersion).toBe(1);
     expect(index.files[0].path).toBe('mods/sodium-1.0.0.jar');
   });
 
   it('sanitises archive names', () => {
-    expect(archiveFilename({ name: 'Ünïcode / Pack!!', version: '2.0', author: '' }, 'modrinth')).toBe('Unicode-Pack-2.0.mrpack');
-    expect(archiveFilename({ name: '///', version: '', author: '' }, 'curseforge')).toBe('modpack.zip');
+    expect(archiveFilename({ name: 'Ünïcode / Pack!!', version: '2.0' }, 'modrinth')).toBe('Unicode-Pack-2.0.mrpack');
+    expect(archiveFilename({ name: '///', version: '' }, 'curseforge')).toBe('modpack.zip');
+  });
+});
+
+describe('bundled files', () => {
+  const mods = orderedMods(packWith([{ info: projectInfo('modrinth', 'a'), modrinth: modrinthFile('a'), curseforge: curseForgeFile(1) }]));
+  const files = [
+    { root: 'overrides' as const, path: 'config/a.toml', size: 3, data: new Blob(['a=1']) },
+    { root: 'client-overrides' as const, path: 'options.txt', size: 2, data: new Blob(['ok']) },
+    { root: 'server-overrides' as const, path: 'server.properties', size: 4, data: new Blob(['pvp=']) },
+  ];
+
+  it('keeps the client/server split in a .mrpack', async () => {
+    const archive = await buildPackArchive({ format: 'modrinth', meta: { ...meta, description: 'Cosy pack' }, profile: fabric, loaderVersion: '0.16.5', mods, files });
+    const zip = await JSZip.loadAsync(await archive.blob.arrayBuffer());
+    expect(await zip.file('overrides/config/a.toml')!.async('string')).toBe('a=1');
+    expect(zip.file('client-overrides/options.txt')).not.toBeNull();
+    expect(zip.file('server-overrides/server.properties')).not.toBeNull();
+    expect(JSON.parse(await zip.file('modrinth.index.json')!.async('string')).summary).toBe('Cosy pack');
+    expect(archive.droppedFiles).toBe(0);
+  });
+
+  it('merges client files into overrides and drops server-only files for CurseForge', async () => {
+    const archive = await buildPackArchive({ format: 'curseforge', meta, profile: fabric, loaderVersion: '0.16.5', mods, files });
+    const zip = await JSZip.loadAsync(await archive.blob.arrayBuffer());
+    expect(zip.file('overrides/config/a.toml')).not.toBeNull();
+    expect(zip.file('overrides/options.txt')).not.toBeNull();
+    expect(zip.file('overrides/server.properties')).toBeNull();
+    expect(archive.droppedFiles).toBe(1);
   });
 });

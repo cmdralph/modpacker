@@ -2,6 +2,13 @@ import type { ProjectInfo } from '../api/common';
 import { initialPackState, packReducer, type PackAction, type PackState } from '../state/pack';
 import type { CurseForgeFileRef, ModSource, ModrinthFileRef } from '../types';
 
+/** Deterministic 40-character hex string standing in for a SHA-1. */
+export function fakeSha1(seed: string): string {
+  let h = 0x811c9dc5;
+  for (const ch of seed) h = Math.imul(h ^ ch.charCodeAt(0), 0x01000193) >>> 0;
+  return h.toString(16).padStart(8, '0').repeat(5);
+}
+
 export function projectInfo(source: ModSource, projectId: string, title = projectId): ProjectInfo {
   return {
     source,
@@ -21,7 +28,7 @@ export function modrinthFile(projectId: string, overrides: Partial<ModrinthFileR
     versionId: `${projectId}-v1`,
     versionNumber: '1.0.0',
     filename: `${projectId}-1.0.0.jar`,
-    sha1: `sha1-${projectId}`,
+    sha1: fakeSha1(projectId),
     sha512: `sha512-${projectId}`,
     url: `https://cdn.modrinth.com/data/${projectId}/versions/v1/${projectId}-1.0.0.jar`,
     size: 1024,

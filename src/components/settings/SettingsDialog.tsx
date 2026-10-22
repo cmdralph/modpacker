@@ -1,5 +1,5 @@
 import { Check, Eye, EyeOff, KeyRound, LayoutGrid, List, Palette, PanelLeft, PanelRight, RotateCcw, Server, Settings, ShieldCheck, SlidersHorizontal, TriangleAlert } from 'lucide-react';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { getCurseForgeAccess } from '../../api/curseforgeConfig';
 import { ACCENTS, THEMES, preferencesStore, setPreferences, type Preferences } from '../../state/preferences';
 import { settingsStore } from '../../state/settings';
@@ -236,19 +236,16 @@ const TABS: { id: SettingsTab; label: string; icon: ReactNode }[] = [
 
 export function SettingsDialog() {
   const tab = useStore(uiStore, (s) => s.settingsTab);
+  // Mounted only while open, so the CurseForge form always starts from the saved values.
+  return tab ? <SettingsPanel tab={tab} /> : null;
+}
+
+function SettingsPanel({ tab }: { tab: SettingsTab }) {
   const prefs = useStore(preferencesStore, (s) => s);
   const settings = useStore(settingsStore, (s) => s);
   const [apiKey, setApiKey] = useState(settings.curseforgeApiKey);
   const [proxyUrl, setProxyUrl] = useState(settings.curseforgeProxyUrl);
   const [proxyError, setProxyError] = useState<string | null>(null);
-  const open = tab !== null;
-
-  useEffect(() => {
-    if (!open) return;
-    setApiKey(settings.curseforgeApiKey);
-    setProxyUrl(settings.curseforgeProxyUrl);
-    setProxyError(null);
-  }, [open, settings]);
 
   const dirty = apiKey.trim() !== settings.curseforgeApiKey || proxyUrl.trim() !== settings.curseforgeProxyUrl;
 
@@ -281,14 +278,14 @@ export function SettingsDialog() {
 
   return (
     <Modal
-      open={open}
+      open
       onClose={ui.closeSettings}
       size="lg"
       icon={<Settings className="size-6 text-accent-400" />}
       title="Settings"
       description="Appearance and layout changes apply instantly and are remembered in this browser."
       headerExtra={
-        <div role="tablist" aria-label="Settings sections" className="flex gap-1 overflow-x-auto">
+        <div role="tablist" aria-label="Settings sections" className="grid grid-cols-3 gap-1">
           {TABS.map((t) => (
             <button
               key={t.id}
@@ -297,7 +294,7 @@ export function SettingsDialog() {
               aria-selected={tab === t.id}
               onClick={() => ui.openSettings(t.id)}
               className={cx(
-                'inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400',
+                'inline-flex min-w-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2 py-1.5 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400 max-sm:[&>svg]:hidden',
                 tab === t.id ? 'bg-base-800 text-base-50' : 'text-base-400 hover:bg-base-800/60 hover:text-base-200',
               )}
             >
